@@ -403,11 +403,19 @@ ARG LLAMA_COMMIT="master"
 #          STILL UNMEASURED on this box (see the 09-15 note) -- if `benchmark`
 #          does not show the gfx1151 gain on an XTX, delete it rather than
 #          carrying a patch for nothing.
+# Revised 2026-09-24:
+#   #27952 (int8 coopmat1 MMQ) RETIRED -- merged upstream (70c4e1582), so
+#          master carries it now. Its final form folds in #28440 (IQ4_XS cm1)
+#          and brings #28415 (IQ4_XS MMQ/MMV) along with master, the pair that
+#          produced subtly broken UD-Q4_K_XL output on RDNA3 on 09-09 -- check
+#          the text, not only t/s, on any IQ4_XS-bearing quant.
+#   #28943 (HIP masked-KV-tile skip) RETIRED -- closed without merge on 09-22
+#          (the maintainer asked for a human redesign).
 # patches/*.patch (local rebased patches) apply after the merges to both
 # backends -- so a patch has to be generated against the tree with ALL the
 # other merges in it, not just against master (see patches/README.md).
 # Retire PRs from the list as they merge (the build says so).
-ARG LLAMA_PATCHES="27952 28243 28265 28213 28699 27210 28333 25592 28927 28956 28876 28943"
+ARG LLAMA_PATCHES="28243 28265 28213 28699 27210 28333 25592 28927 28956 28876"
 
 # Cache key only (see LLAMA_SWAP_PATCHES_HEADS).
 ARG LLAMA_PATCHES_HEADS=""
