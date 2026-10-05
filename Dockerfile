@@ -1745,6 +1745,12 @@ COPY config/config.yaml /etc/llama-swap/config/config.yaml
 # PEP-668 externally managed).
 COPY --chmod=0755 scripts/benchmark /usr/local/bin/benchmark
 
+# `rerank-bench` CLI (scripts/rerank-bench): nDCG@10 of reranker entries over a
+# cached embedding stage 1 on MTEB retrieval sets. numpy + pyarrow are not in the
+# apt set; it re-execs itself through uv on first use (a few seconds, needs net
+# once), like benchmark's PyYAML fallback.
+COPY --chmod=0755 scripts/rerank-bench /usr/local/bin/rerank-bench
+
 # Fixed Qwen 3.5/3.6/3.8 chat templates for `--chat-template-file`:
 #   qwen-fixed.jinja -- froggeric's (reasoning-depth default, enable_thinking=false,
 #                       history <think> extraction, tool-call wire format -- see the

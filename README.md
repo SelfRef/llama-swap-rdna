@@ -23,6 +23,7 @@ Both llama.cpp backends are built with runtime CPU dispatch (`GGML_CPU_ALL_VARIA
 | [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp) master | `sd-server` (web UI embedded), `sd-cli` | `sd-server-rocm` (web UI embedded), `sd-cli-rocm` |
 | [audio.cpp](https://github.com/0xShug0/audio.cpp) main | `audiocpp_server`, `audiocpp_cli`, `audiocpp_gguf` (GGUF converter, upstream ships none) | — (no HIP backend upstream) |
 | `benchmark` (this repo, `scripts/benchmark`) | one CLI for server-level / `llama-bench` / standalone-variant benchmarks of the config's text entries, see [Benchmarking](#benchmarking) | (uses the `*-rocm` / `*-engram` / `*-fpx` binaries via `--variant`) |
+| `rerank-bench` (this repo, `scripts/rerank-bench`) | retrieval quality (nDCG@10) of the config's reranker entries over a cached embedding stage, see [Reranker quality](#reranker-quality-rerank-bench) | — |
 
 llama.cpp lives in self-contained directories `/opt/llama-vulkan`, `/opt/llama-rocm`, `/opt/llama-engram` and `/opt/llama-fpx` (binaries, `libllama`/`libggml*` and the per-CPU-level `libggml-cpu-*.so` variants, RPATH `$ORIGIN`) with symlinks in `/usr/local/bin`; whisper/sd/audio.cpp binaries are static. Exact versions of everything — every commit, every merged PR, the glslc used and the enabled build options — are recorded in `/versions.txt` inside the image.
 
@@ -32,7 +33,7 @@ Built from plain `ubuntu:24.04` (see [Why not build on the upstream image](#why-
 
 - Binaries in `/usr/local/bin`; config at `/etc/llama-swap/config/config.yaml` (mount the directory or the file); models in `/models` (the working directory); audio.cpp's spec catalog at `/usr/local/share/audiocpp/model_specs`; `/versions.txt`.
 - Entrypoint is `llama-swap` itself with `-config /etc/llama-swap/config/config.yaml -listen 0.0.0.0:8080 -watch-config` as the default `CMD`. Any argument passed to the container replaces those defaults (`docker run <image> -version`, `docker run <image> -config /models/my.yaml -listen 0.0.0.0:8080`).
-- Also present: `rocm-smi` (llama-swap's GPU monitor in its UI reads it; sysfs-based, works without the ROCm runtime), `ffmpeg` + libav\* (whisper-server input decoding), `curl`, `python3` + PyYAML (for `benchmark`), `uv`/`uvx`.
+- Also present: `rocm-smi` (llama-swap's GPU monitor in its UI reads it; sysfs-based, works without the ROCm runtime), `ffmpeg` + libav\* (whisper-server input decoding), `curl`, `python3` + PyYAML (for `benchmark`), `uv`/`uvx` (also how `rerank-bench` gets numpy + pyarrow).
 - Runs as root, like upstream's root variant. There is no `-rootless` tag.
 
 ## Why build the Vulkan binaries ourselves
@@ -336,6 +337,56 @@ VRAM-resident entry flags `SPILL`; on UMA GPUs (Strix Halo) the check is off. Th
 sha256 of the first measured output and is reproducible for the same request sequence across
 loads and builds. Needs `LLAMA_SWAP_API_KEY` in the environment when llama-swap has `apiKeys`.
 `-rocm`/`-engram` variants exist only in the `:full`/`:latest` tag; `-fpx` is in both tags.
+
+### Reranker quality (`rerank-bench`)
+
+`rerank-bench` (in `/usr/local/bin`, source `scripts/rerank-bench`) measures what `benchmark` cannot:
+how much a **reranker** entry improves retrieval. It is a quality tool, nDCG@10, against the served
+entries through llama-swap:
+
+```sh
+docker compose exec llama-swap rerank-bench --embed embeddinggemma \
+    --query-prefix 'task: search result | query: ' \
+    --doc-template 'title: {title} | text: {text}' --empty-title none \
+    qwen3-reranker jina-reranker-v2              # model ids from your config.yaml
+docker compose exec llama-swap rerank-bench --embed embeddinggemma   # stage-1 baseline only
+```
+
+Stage 1 is the `--embed` model retrieving the top 25 per query over the whole corpus; it is
+computed once per embedder / prompt / task set and cached, so adding a reranker later costs only
+that reranker's pass. Every reranker then re-orders the **same** candidates, so arms differ only in
+the reranker, and the `stage 1 only` row is the baseline to beat — with a strong embedder, a
+reranker that makes things worse is common. Default tasks are the MTEB NFCorpus and SciFact test
+splits in English and Polish (same corpora, two languages, so an EN/PL gap is multilingual quality);
+`--task <hf dataset repo>` takes any MTEB-layout retrieval set. Datasets (~25 MB) are fetched once
+and cached next to the model hub; numpy + pyarrow come through `uv` on first use.
+
+Example, RX 7800 XT, EmbeddingGemma-300M with both prompts as stage 1 (wall time for ~31k pairs):
+
+| reranker | NFCorpus-PL | SciFact-PL | NFCorpus | SciFact | mean | time |
+|---|---:|---:|---:|---:|---:|---:|
+| stage 1 only | 0.3008 | 0.6882 | 0.3889 | 0.7911 | 0.5423 | — |
+| bge-reranker-v2-m3 Q8_0 | 0.3191 | 0.6994 | 0.3619 | 0.7475 | 0.5320 | 812 s |
+| jina-reranker-v2-base-multilingual Q8_0 | 0.3149 | 0.7226 | 0.3839 | 0.7765 | 0.5495 | 332 s |
+| Qwen3-Reranker-0.6B Q8_0 | 0.3139 | 0.7188 | 0.3995 | 0.7743 | 0.5516 | 4366 s |
+
+Serving notes the tool surfaces:
+
+- **Encoder rerankers (XLM-R based: Jina v2, BGE m3) must fit a whole pair in one physical batch.**
+  At llama-server's default `-ub 512` every pair over 512 tokens is a 500, not a slow path (the
+  Qwen3 decoders can split a pair across batches; encoders cannot). Set `-b`/`-ub` to the model's
+  trained context and `--ctx-size` to that times `--parallel`, so an oversized pair is a clean 400
+  `exceed_context_size` instead. `--ctx-size` is shared by the slots: 8192 with `--parallel 4` is a
+  2048-token limit per pair.
+- **Qwen3-Reranker is slow on short chunks.** It wraps every pair in a ~80-token instruction
+  template, so on 45-word chunks two thirds of the tokens it processes are template — ~13x the
+  wall time of Jina v2 above. More slots or a unified KV cache did not help (it is prefill-bound).
+- **Scores are not comparable across models.** Qwen3 returns a 0-1 probability, XLM-R encoders raw
+  logits (mostly negative). Ranking is unaffected, but a client-side relevance threshold of 0 would
+  drop most of an encoder's results.
+- GGUFs that are plain causal conversions of a decoder reranker (most community Qwen3-Reranker-4B
+  / Qwen3-VL-Reranker files) return ~0 for every document: run the stage-1 baseline plus that model
+  and an arm at or below the baseline is the tell.
 
 ## Notes
 

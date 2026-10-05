@@ -1,0 +1,267 @@
+#!/usr/bin/env python3
+"""rerank-bench -- retrieval quality (nDCG@10) of llama-swap reranker entries.
+
+Run INSIDE the llama-swap container (baked to /usr/local/bin/rerank-bench):
+
+    docker compose exec llama-swap rerank-bench --embed <embedding model> <reranker> [reranker ...]
+
+Two stages, against the SERVED entries (their real flags, through llama-swap):
+
+  1. The embedding model given with --embed retrieves the top --top-k documents per
+     query (cosine over the whole corpus). Computed ONCE per embedder/prompt/task set
+     and cached, so a later run with another reranker re-uses it.
+  2. Every reranker re-orders the SAME candidates via /v1/rerank. Arms therefore
+     differ only in the reranker, and the "stage 1 only" row is the no-reranker
+     baseline every arm has to beat.
+
+Tasks (default): the MTEB retrieval test splits NFCorpus and SciFact in English and
+their Polish translations -- the same two corpora in two languages, so an EN/PL gap
+is the model's multilingual quality rather than a different retrieval problem. Any
+MTEB-layout dataset repo works with --task (jsonl: corpus/queries/qrels/test.jsonl;
+parquet: corpus/ queries/ data/). Files are fetched once from huggingface.co and
+cached next to the model hub.
+
+Things to know when reading a row:
+  * Documents are cut to --doc-chars for EVERY arm alike. Encoder rerankers (XLM-R
+    and friends) reject a pair longer than one physical batch or their trained
+    context outright; such a pair is retried at half length and counted in the
+    `short` column. A high count means the arm saw less of the corpus than others.
+  * Scores are only ever sorted, so a reranker returning raw logits (most encoders)
+    and one returning probabilities (Qwen3-Reranker) are compared fairly. A
+    CONSUMER that applies a relevance threshold is a different story.
+  * Wall time is with --concurrency requests in flight and the reranker loaded
+    before the clock starts. Other models computing on the same GPU distort it a
+    lot; --unload clears llama-swap first.
+  * A reranker below "stage 1 only" makes retrieval WORSE. With a strong embedder
+    that is common, especially on SciFact.
+
+EmbeddingGemma, for example, wants its prompts on both sides:
+
+    rerank-bench --embed embeddinggemma \\
+        --query-prefix 'task: search result | query: ' \\
+        --doc-template 'title: {title} | text: {text}' --empty-title none \\
+        qwen3-reranker jina-reranker-v2
+"""
+import argparse, glob, hashlib, json, math, os, shutil, sys, time
+import urllib.error, urllib.request
+from concurrent.futures import ThreadPoolExecutor
+
+try:
+    import numpy as np
+    import pyarrow.parquet as pq
+except ImportError:  # not in the image's apt set: re-exec once through uv
+    if os.environ.get("RERANK_BENCH_REEXEC") or not shutil.which("uv"):
+        sys.exit("rerank-bench: needs numpy + pyarrow (pip install numpy pyarrow), or uv on PATH")
+    os.environ["RERANK_BENCH_REEXEC"] = "1"
+    os.execvp("uv", ["uv", "run", "--quiet", "--no-project", "--with", "numpy", "--with", "pyarrow",
+                     "python3", os.path.abspath(__file__), *sys.argv[1:]])
+
+BASE = "http://localhost:8080"
+TASKS = ["mteb/NFCorpus-PL", "mteb/SciFact-PL", "mteb/nfcorpus", "mteb/scifact"]
+JSONL_FILES = ["corpus.jsonl", "queries.jsonl", "qrels/test.jsonl"]
+PARQUET_FILES = ["corpus/test-00000-of-00001.parquet", "queries/test-00000-of-00001.parquet",
+                 "data/test-00000-of-00001.parquet"]
+
+
+class UserError(Exception):
+    pass
+
+
+def cache_root() -> str:
+    """Next to the model hub (same lookup as llama.cpp / `benchmark`), so it shares its volume."""
+    for var in ("LLAMA_CACHE", "HF_HUB_CACHE"):
+        if os.environ.get(var):
+            return os.path.join(os.path.dirname(os.environ[var].rstrip("/")), "rerank-bench")
+    hf = os.environ.get("HF_HOME") or os.path.expanduser("~/.cache/huggingface")
+    return os.path.join(hf, "rerank-bench")
+
+
+class Swap:
+    def __init__(self, base: str, key: str | None, timeout: float):
+        self.base, self.timeout = base.rstrip("/"), timeout
+        self.headers = {"Content-Type": "application/json"}
+        if key:
+            self.headers["Authorization"] = f"Bearer {key}"
+
+    def call(self, method: str, path: str, body: dict | None = None):
+        req = urllib.request.Request(self.base + path, json.dumps(body).encode() if body is not None else None,
+                                     self.headers, method=method)
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as r:
+                return json.load(r)
+        except urllib.error.HTTPError as e:
+            if e.code == 401:
+                raise UserError("llama-swap rejected the API key (401) -- set LLAMA_SWAP_API_KEY")
+            raise
+
+    def unload(self) -> None:
+        self.call("GET", "/unload")
+        for _ in range(60):
+            if not [r for r in self.call("GET", "/running").get("running", []) if r.get("state") != "stopped"]:
+                time.sleep(2)  # let the driver free VRAM
+                return
+            time.sleep(1)
+        raise UserError("models still resident 60 s after /unload")
+
+
+# ── datasets ─────────────────────────────────────────────────────────────────
+def fetch(repo: str) -> str:
+    d = os.path.join(cache_root(), "datasets", repo.replace("/", "--"))
+    for layout in (JSONL_FILES, PARQUET_FILES):
+        if all(os.path.isfile(os.path.join(d, f)) for f in layout):
+            return d
+    for layout in (JSONL_FILES, PARQUET_FILES):
+        try:
+            for f in layout:
+                dst = os.path.join(d, f)
+                os.makedirs(os.path.dirname(dst), exist_ok=True)
+                url = f"https://huggingface.co/datasets/{repo}/resolve/main/{f}"
+                with urllib.request.urlopen(url, timeout=120) as r, open(dst + ".part", "wb") as out:
+                    shutil.copyfileobj(r, out)
+                os.replace(dst + ".part", dst)
+            return d
+        except urllib.error.HTTPError as e:
+            if e.code != 404:
+                raise
+            shutil.rmtree(d, ignore_errors=True)
+    raise UserError(f"{repo}: neither the jsonl nor the parquet MTEB layout exists on huggingface.co")
+
+
+def load(repo: str):
+    d = fetch(repo)
+    if os.path.isfile(os.path.join(d, JSONL_FILES[0])):
+        rows = [[json.loads(l) for l in open(os.path.join(d, f))] for f in JSONL_FILES]
+    else:
+        rows = [pq.read_table(os.path.join(d, f)).to_pylist() for f in PARQUET_FILES]
+    corpus, queries, qrel_rows = rows
+    qrels: dict[str, dict[str, float]] = {}
+    for r in qrel_rows:
+        if float(r["score"]) > 0:
+            qrels.setdefault(str(r["query-id"]), {})[str(r["corpus-id"])] = float(r["score"])
+    docs = {str(x["_id"]): (x.get("title") or "", x.get("text") or "") for x in corpus}
+    qs = {str(q["_id"]): q["text"] for q in queries if str(q["_id"]) in qrels}
+    return docs, qs, qrels
+
+
+# ── scoring ──────────────────────────────────────────────────────────────────
+def ndcg10(ranked: list[str], rel: dict[str, float]) -> float:
+    dcg = sum(rel.get(d, 0) / math.log2(i + 2) for i, d in enumerate(ranked[:10]))
+    idcg = sum(g / math.log2(i + 2) for i, g in enumerate(sorted(rel.values(), reverse=True)[:10]))
+    return dcg / idcg if idcg else 0.0
+
+
+def embed(swap: Swap, model: str, texts: list[str], conc: int) -> "np.ndarray":
+    out: list = [None] * len(texts)
+
+    def batch(i: int) -> None:
+        r = swap.call("POST", "/v1/embeddings", {"model": model, "input": texts[i:i + 32]})
+        for j, d in enumerate(sorted(r["data"], key=lambda d: d["index"])):
+            out[i + j] = d["embedding"]
+    with ThreadPoolExecutor(conc) as ex:
+        list(ex.map(batch, range(0, len(texts), 32)))
+    m = np.asarray(out, dtype=np.float32)
+    return m / np.linalg.norm(m, axis=1, keepdims=True)
+
+
+def stage1(swap: Swap, a, data) -> dict:
+    key = json.dumps([a.embed, a.query_prefix, a.doc_template, a.empty_title, a.top_k, a.embed_chars, a.task])
+    path = os.path.join(cache_root(), f"stage1-{hashlib.sha256(key.encode()).hexdigest()[:16]}.json")
+    if os.path.isfile(path):
+        print(f"stage 1: cached ({path})", file=sys.stderr)
+        return json.load(open(path))
+    res = {}
+    for t in a.task:
+        docs, qs, _ = data[t]
+        ids, qids, t0 = list(docs), list(qs), time.time()
+        D = embed(swap, a.embed, [a.doc_template.format(title=docs[i][0] or a.empty_title, text=docs[i][1])[:a.embed_chars]
+                                  for i in ids], a.concurrency)
+        Q = embed(swap, a.embed, [(a.query_prefix + qs[q])[:a.embed_chars] for q in qids], a.concurrency)
+        top = np.argsort(-(Q @ D.T), axis=1)[:, :a.top_k]
+        res[t] = {q: [ids[j] for j in top[n]] for n, q in enumerate(qids)}
+        print(f"stage 1: {t} -- {len(ids)} docs, {len(qids)} queries, {time.time() - t0:.0f}s", file=sys.stderr)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    json.dump(res, open(path, "w"))
+    return res
+
+
+def rerank_arm(swap: Swap, model: str, cands: dict, a, data) -> dict:
+    row: dict = {"model": model, "short": 0, "seconds": 0}
+    swap.call("POST", "/v1/rerank", {"model": model, "query": "warm up", "documents": ["a"]})  # load off the clock
+    for t in a.task:
+        docs, qs, qrels = data[t]
+
+        def one(q: str) -> float:
+            texts = [(f"{docs[d][0]}. " if docs[d][0] else "") + docs[d][1] for d in cands[t][q]]
+            cut = a.doc_chars
+            while True:
+                try:
+                    r = swap.call("POST", "/v1/rerank", {"model": model, "query": qs[q], "documents": [x[:cut] for x in texts]})
+                    break
+                except urllib.error.HTTPError as e:  # 400 exceed_context / 500 too large for the batch
+                    if e.code in (400, 500) and cut > 256:
+                        cut //= 2
+                        row["short"] += 1
+                        continue
+                    raise
+            order = [cands[t][q][x["index"]] for x in sorted(r["results"], key=lambda x: -x["relevance_score"])]
+            return ndcg10(order, qrels[q])
+        t0 = time.time()
+        with ThreadPoolExecutor(a.concurrency) as ex:
+            row[t] = float(np.mean(list(ex.map(one, list(qs)))))
+        row["seconds"] += round(time.time() - t0)
+        print(f"  {model} {t}: {row[t]:.4f} ({time.time() - t0:.0f}s)", file=sys.stderr)
+    row["mean"] = float(np.mean([row[t] for t in a.task]))
+    return row
+
+
+def render(rows: list[dict], tasks: list[str], fmt: str) -> str:
+    if fmt == "json":
+        return json.dumps(rows, indent=1)
+    head = ["reranker", *[t.split("/")[-1] for t in tasks], "mean", "time", "short"]
+    body = [[r["model"], *[f"{r[t]:.4f}" for t in tasks], f"{r['mean']:.4f}",
+             f"{r['seconds']}s" if r["seconds"] else "-", str(r["short"]) if r["seconds"] else "-"] for r in rows]
+    if fmt == "md":
+        return "\n".join(["| " + " | ".join(head) + " |", "|" + "---|" * len(head)] +
+                         ["| " + " | ".join(b) + " |" for b in body])
+    w = [max(len(x) for x in col) for col in zip(head, *body)]
+    return "\n".join("  ".join(c.ljust(n) for c, n in zip(line, w)) for line in [head, *body])
+
+
+def main() -> int:
+    p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    p.add_argument("rerankers", nargs="*", help="llama-swap reranker model ids (none = stage-1 baseline only)")
+    p.add_argument("--embed", required=True, help="llama-swap embedding model id for stage 1")
+    p.add_argument("--task", action="append", help=f"MTEB dataset repo, repeatable (default: {' '.join(TASKS)})")
+    p.add_argument("--query-prefix", default="", help="prepended to every query for stage 1")
+    p.add_argument("--doc-template", default="{title} {text}", help="stage-1 document text, {title} and {text}")
+    p.add_argument("--empty-title", default="", help="{title} value for documents without one")
+    p.add_argument("--top-k", type=int, default=25, help="stage-1 candidates per query")
+    p.add_argument("--embed-chars", type=int, default=3000, help="stage-1 input cut, characters")
+    p.add_argument("--doc-chars", type=int, default=2500, help="reranker document cut, characters")
+    p.add_argument("--concurrency", type=int, default=4, help="requests in flight")
+    p.add_argument("--unload", action="store_true", help="GET /unload first")
+    p.add_argument("--format", choices=("table", "md", "json"), default="table")
+    p.add_argument("--base", default=BASE, help="llama-swap URL")
+    p.add_argument("--timeout", type=float, default=600, help="per-request timeout in seconds (model load included)")
+    a = p.parse_args()
+    a.task = a.task or TASKS
+    swap = Swap(a.base, os.environ.get("LLAMA_SWAP_API_KEY"), a.timeout)
+    try:
+        if a.unload:
+            swap.unload()
+        data = {t: load(t) for t in a.task}
+        cands = stage1(swap, a, data)
+        base = {"model": f"stage 1 only ({a.embed})", "short": 0, "seconds": 0}
+        for t in a.task:
+            base[t] = float(np.mean([ndcg10(cands[t][q], data[t][2][q]) for q in cands[t]]))
+        base["mean"] = float(np.mean([base[t] for t in a.task]))
+        rows = [base] + [rerank_arm(swap, m, cands, a, data) for m in a.rerankers]
+    except UserError as e:
+        print(f"rerank-bench: {e}", file=sys.stderr)
+        return 2
+    print(render(rows, a.task, a.format))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
