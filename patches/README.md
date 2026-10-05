@@ -38,6 +38,19 @@ box**. Run `benchmark` against the stock-Vulkan MTP entries (`qwen38-bart`,
 rather than carrying it. Delete it and put `25666` back in `LLAMA_PATCHES` the
 moment the author rebases.
 
+## 28333-rebased.patch
+
+Upstream PR #28333 (speculative: zero the MTP carrier at sequence start), rebased
+on 2026-10-05 onto master `e117148a4` + the PRs in `LLAMA_PATCHES` + `25666-rebased.patch`.
+Identical deterministic requests produced different tokens because the hidden-state
+carrier of the previous request leaked into the first draft of the next one.
+
+Master moved the MTP catch-up decode to `llama_batch_ext`: the per-sequence
+`set_h()` call the PR edits is gone, replaced by one loop that adds each token and
+picks its embedding row. The patch puts the PR's zero-fill into that loop, at the
+first token of a sequence whose position is 0 -- the same condition as the PR, one
+hunk. Delete it and put `28333` back in `LLAMA_PATCHES` once the author rebases.
+
 ## Retired
 
 ### 28243-rebased.patch (removed 2026-09-18)

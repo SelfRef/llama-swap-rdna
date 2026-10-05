@@ -11,8 +11,8 @@
 #     tree -- so an open llama-swap PR ships in THE llama-swap binary, not as a
 #     side binary.
 #   - llama.cpp from current master + the open upstream PRs in LLAMA_PATCHES
-#     (Vulkan fusions, Qwen fixes, qwen4exp MTP, adaptive MTP, checkpoint
-#     restore, ... -- the list with rationale is at the LLAMA_PATCHES arg), the
+#     (Qwen fixes, checkpoint restore, MTP fixes, ... -- the list with
+#     rationale is at the LLAMA_PATCHES arg), the
 #     SAME tree for the Vulkan and the ROCm build. There is no un-patched
 #     llama.cpp in the image any more: llama-server IS the patched build.
 #   - the ROCm userspace runtime (HIP runtime, rocBLAS/hipBLAS + Tensile
@@ -411,11 +411,31 @@ ARG LLAMA_COMMIT="master"
 #          the text, not only t/s, on any IQ4_XS-bearing quant.
 #   #28943 (HIP masked-KV-tile skip) RETIRED -- closed without merge on 09-22
 #          (the maintainer asked for a human redesign).
+# Revised 2026-10-05 against master e117148a4:
+#   #28956 (exact A/B descriptor ranges in mul_mm) and #28876 (RANK pooling
+#          batch splitting for causal rerankers) RETIRED -- merged upstream.
+#   #28243 (qwen4exp MTP) RETIRED -- closed, superseded by #29761 (Qwen4Exp
+#          MTP), merged 10-01.
+#   #28927 (no scheduler re-reserve on set_causal_attn) RETIRED -- closed,
+#          superseded by #28751, merged 09-28.
+#   #28213 (qwen4exp gather-based QSA decode) RETIRED -- closed 10-01: master
+#          has CUDA sparse FA for qwen4exp and GLM5-Next's shared k-pool cache
+#          and matches or beats it at every depth (the author's own re-test).
+#   #28699 (qwen4exp incremental pooled-key cache) DROPPED -- still open but
+#          no longer merges: master's own k-pool cache (GLM5-Next) took the
+#          same lines and, per #28213's close, matches it.
+#   #27210 (draft-mtp-adaptive) DROPPED -- no longer merges with master's
+#          rejection-sampling speculative rewrite (#27694). The *-rdna3
+#          binaries still carry draft-mtp-adaptive, re-ported onto it.
+#   #28333 (zero the MTP carrier at sequence start) MOVED to
+#          patches/28333-rebased.patch: master migrated the MTP catch-up loop
+#          to llama_batch_ext, so the PR's set_h() call has nothing to anchor
+#          to. The patch is the same zero-fill, re-expressed in the new loop.
 # patches/*.patch (local rebased patches) apply after the merges to both
 # backends -- so a patch has to be generated against the tree with ALL the
 # other merges in it, not just against master (see patches/README.md).
 # Retire PRs from the list as they merge (the build says so).
-ARG LLAMA_PATCHES="28243 28265 28213 28699 27210 28333 25592 28927 28956 28876"
+ARG LLAMA_PATCHES="28265 25592"
 
 # Cache key only (see LLAMA_SWAP_PATCHES_HEADS).
 ARG LLAMA_PATCHES_HEADS=""
