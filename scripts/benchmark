@@ -339,7 +339,9 @@ _FLAGS: dict[str, tuple[str, type | None]] = {
 
 def parse_entry(key: str, m: dict, cfg: dict) -> Entry:
     cmd = (m.get("cmd") or "").replace("${PORT}", "0")
-    argv = shlex.split(cmd)
+    # comments=True: llama-swap strips `# ...` comment lines inside cmd, and an apostrophe in one
+    # ("the model's maximum") is otherwise an unbalanced quote that takes the whole config down
+    argv = shlex.split(cmd, comments=True)
     if not argv:
         raise UserError(f"{key}: empty cmd")
     e = Entry(key=key, argv=argv, binary=argv[0])
@@ -1596,7 +1598,11 @@ def measure(target: Target, entry: Entry, preset: Preset, opts: argparse.Namespa
         body.update(GREEDY)
         d = target.post("/v1/chat/completions", body)
         msg = d["choices"][0]["message"]
-        h = hashlib.sha256(json.dumps(msg, sort_keys=True).encode()).hexdigest()[:12]
+        # tool-call ids are random per request, so hash the call without them
+        stable = dict(msg)
+        if msg.get("tool_calls"):
+            stable["tool_calls"] = [{k: v for k, v in tc.items() if k != "id"} for tc in msg["tool_calls"]]
+        h = hashlib.sha256(json.dumps(stable, sort_keys=True).encode()).hexdigest()[:12]
     wall = time.monotonic() - t0
     if msg is not None:
         if preset.name in ("agent", "tools"):
