@@ -1702,7 +1702,8 @@ def bench_server(target: Target, entry: Entry, presets: list[Preset], opts: argp
             row.wall = statistics.median(r[0].get("wall_s", 0) or 0 for r in runs) or None
             row.extra = runs[0][2]
             row.vram, row.gtt = vram_mib(), gtt_mib()
-            if (not uma and opts.spill_threshold and entry.ngl == "all" and entry.fit != "on"
+            all_layers = entry.ngl == "all" or (entry.ngl or "").isdigit() and int(entry.ngl) >= 999
+            if (not uma and opts.spill_threshold and all_layers and entry.fit != "on"
                     and row.gtt - baseline_gtt > opts.spill_threshold):
                 row.flags.append("SPILL")
         except Exception as ex:

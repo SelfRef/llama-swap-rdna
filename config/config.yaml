@@ -36,6 +36,10 @@ models:
   # model's own MTP head decodes ~26-35% faster than the same model as
   # UD-Q4_K_XL on `llama-server`, in 3.3 GiB less VRAM (see the WITH_FPX arg in
   # the Dockerfile for the numbers and the quality cost).
+  # Set the context and KV types explicitly: the default (full training context,
+  # f16 K and V) does not fit in 24 GB and spills to GTT, 4-5x slower. f16 K is
+  # the fastest K type here; V type barely matters for speed, so q4_0 buys
+  # back the VRAM. -ctk q8_0 -ctv q8_0 also fits.
   "qwen38-fp4":
     cmd: >
       llama-server-fpx
@@ -43,6 +47,8 @@ models:
       --port ${PORT}
       -ngl 999
       --flash-attn on
+      --ctx-size 131072
+      --cache-type-k f16 --cache-type-v q4_0
       --spec-type draft-mtp --spec-draft-n-max 4
 
   "whisper":
