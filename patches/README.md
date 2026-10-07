@@ -32,9 +32,8 @@ re-anchored -- no hunk was reinterpreted, and the `// Device tuning` comment
 comes back with it (verified: it appears exactly once in the merged tree).
 
 This one is carried on a weaker justification than 28243: the +12.9 % TG and
-the acceptance gain are **gfx1151 numbers from upstream, never measured on this
-box**. Run `benchmark` against the stock-Vulkan MTP entries (`qwen38-bart`,
-`-hau`, `-hui`) on a quiet GPU; if the gain is not there, delete this patch
+the acceptance gain are **gfx1151 numbers from upstream, not yet measured on a
+discrete GPU**. Run `benchmark` against a stock-Vulkan MTP model on a quiet GPU; if the gain is not there, delete this patch
 rather than carrying it. Delete it and put `25666` back in `LLAMA_PATCHES` the
 moment the author rebases.
 

@@ -35,7 +35,7 @@ Five modes, one table:
                      change anything", where determinism and the hash are the
                      point. CAVEAT: it OVERSTATES real-world decode, since draft
                      acceptance falls at production temperature -- measured on
-                     qwen38-fast 2026-09-12: prose +26% (71.4 vs 56.7 t/s, accept
+                     Qwen3.8-27B + MTP 2026-09-12: prose +26% (71.4 vs 56.7 t/s, accept
                      44 vs 29%), tools +7%, json +2%. Never quote it as "what
                      users get", and never mix the two in one comparison.
                      Was the default from 2026-09-12 to 2026-09-15.
@@ -94,12 +94,12 @@ Things the numbers have taught us (keep in mind when reading a row):
   * Benchmark on an idle box; single runs are +-5%, the first run after an image
     switch can read ~10% low.
   * backend -- own column, since 2026-09-15: which binary serves the entry and on
-               which device, `<variant>@<api><index>` -- vulkan/rocm/fpx/rdna3/engram (the
+               which device, `<variant>@<api><index>` -- vulkan/rocm/fpx/rdna/engram (the
                llama-server-<suffix> the cmd names) @ vk0/vk1/hip0/cuda0 (the entry's
                own `env:` pin), `cpu` for an -ngl 0 entry, and no @ when nothing is
-               pinned. Never omit it from a quoted row: this box has two cards and
-               three of the entries moved backend on 2026-09-15 alone (qwen35-2b
-               reads 139 t/s on rocm vs 8.7 on vulkan), so a t/s without a backend
+               pinned. Never omit it from a quoted row: on a multi-GPU host the same
+               entry can read wildly different numbers per backend (a Qwen3.5-2B
+               read 139 t/s on rocm vs 8.7 on vulkan), so a t/s without a backend
                is not a number anyone can reuse. --kernel, --standalone and --ppl
                now also RUN with the entry's env, so the column is true in every
                mode (before 2026-09-15 they inherited the container's device
@@ -180,7 +180,7 @@ GREEDY = {"temperature": 0, "top_k": 1, "seed": 42, "id_slot": 0}
 STANDARD_BENCH = ["-fa", "1", "-ctk", "q8_0", "-ctv", "q4_0", "-b", "2048", "-ub", "512",
                   "-p", "512", "-n", "128", "-d", "0,8192"]
 FIT_MARGIN_MIB = 1024  # llama-server's --fit on default margin (1 GiB)
-VARIANTS = ("vulkan", "rocm", "engram", "fpx", "rdna3")
+VARIANTS = ("vulkan", "rocm", "engram", "fpx", "rdna")
 SIDECAR_PREFIXES = ("mmproj-", "mtp-", "dflash-", "eagle3-", "dspark-")
 # --ppl corpus: the wikitext-2 raw TEST split, fetched exactly the way llama.cpp's
 # own scripts/get-wikitext-2.sh does, so a PPL printed here is comparable with the
@@ -266,7 +266,7 @@ class Entry:
     @property
     def backend(self) -> str:
         """The `backend` column: which binary runs the model and on which device,
-        e.g. `rdna3@vk0`, `fpx@vk0`, `rocm@hip0`, `vulkan@vk1`. Declarative (it is what the entry
+        e.g. `rdna@vk0`, `fpx@vk0`, `rocm@hip0`, `vulkan@vk1`. Declarative (it is what the entry
         asks for), which is exactly what a row has to record: the same model on the
         same box reads 139 t/s on rocm and 8.7 on vulkan (2026-09-15)."""
         return f"{self.variant}@{self.device}" if self.device else self.variant
@@ -412,7 +412,7 @@ class Config:
         for peer, pd in self.peers.items():
             # A LOCAL alias wins over a peer that happens to export the same bare
             # name -- the check below used to compare against entry keys only, so
-            # a local alias (e.g. `qwen38` -> `qwen38-fast`) was reported as
+            # a local alias (e.g. `chat` -> `chat-27b`) was reported as
             # "only exists on peer" and never reached the alias lookup underneath.
             if name in (pd.get("models") or []) and not self._is_local(name):
                 raise UserError(f"{name}: only exists on peer '{peer}' -- run benchmark on that box")
@@ -1175,7 +1175,7 @@ REASONING_MESSAGES = [
 ]
 
 # ── util: the utility-model workload ────────────────────────────────────────
-# What the "utility" role (ling3 today, not the main chat model) actually runs:
+# What a "utility" model (a small one, not the main chat model) actually runs:
 # Open WebUI's background tasks -- title, tags, retrieval query, follow-ups -- plus
 # n8n's classify/extract nodes. They share one shape that NO other preset has: a
 # long prompt (the whole chat history, pasted into a single user message) for a
@@ -1529,8 +1529,8 @@ def measure_vision(target: Target, entry: Entry, preset: Preset, opts: argparse.
     total generated. Accuracy is the point of the row and lands in extras:
       acc   mean case score, 0-100% (character F1 for ocr, right/wrong otherwise)
       ptok  median prompt tokens per case -- how many tokens THIS model spends on
-            the same image; qwen35-* (dynamic ViT + --image-min-tokens) and
-            lfm25-vl (SigLIP2 NaFlex) differ by a lot, and it explains their pp
+            the same image; Qwen3.5 (dynamic ViT + --image-min-tokens) and
+            LFM2.5-VL (SigLIP2 NaFlex) differ by a lot, and it explains their pp
       miss  cases scored below 0.5, by name
     """
     scores, ts, texts, misses = [], [], [], []
@@ -1772,7 +1772,7 @@ def bench_kernel(entry: Entry, opts: argparse.Namespace, variant: str, swap: Swa
     if not shutil.which(binary):
         have = sorted(os.path.basename(p) for d in os.environ["PATH"].split(":")
                       for p in glob.glob(os.path.join(d, "llama-bench*")))
-        row.error = f"{binary} not in this image (have: {', '.join(have) or 'none'}; -rocm/-engram only in the :full tag, -fpx needs WITH_FPX, -rdna3 needs WITH_RDNA3)"
+        row.error = f"{binary} not in this image (have: {', '.join(have) or 'none'}; -rocm/-engram only in the :full tag, -fpx needs WITH_FPX, -rdna needs WITH_RDNA)"
         return row
     try:
         gguf = resolve_gguf(entry)
@@ -1818,12 +1818,12 @@ def bench_kernel(entry: Entry, opts: argparse.Namespace, variant: str, swap: Swa
 
 # ── perplexity runner ────────────────────────────────────────────────────────
 def ppl_binary(variant: str | None) -> tuple[str, str]:
-    """Pick the llama-perplexity build. Default order prefers `rdna3` then `fpx`
+    """Pick the llama-perplexity build. Default order prefers `rdna` then `fpx`
     because both read
     EVERY quant type in this image (the ROCmFPx types no other build understands),
     and because using ONE binary for every file is what makes a set of PPL rows
     comparable at all -- a PPL from build A and a PPL from build B are not."""
-    order = (variant,) if variant else ("rdna3", "fpx", "vulkan", "rocm", "engram")
+    order = (variant,) if variant else ("rdna", "fpx", "vulkan", "rocm", "engram")
     for v in order:
         b = "llama-perplexity" + ("" if v == "vulkan" else f"-{v}")
         if shutil.which(b):
@@ -1999,13 +1999,13 @@ def build_parser() -> argparse.ArgumentParser:
                     "their GGUFs (llama-bench / llama-perplexity) or a standalone llama-server variant.",
         epilog="presets:\n" + "\n".join(f"  {n:<12} {p.note}" for n, p in PRESETS.items())
                + "\ngroups:\n" + "\n".join(f"  {n:<12} {', '.join(v)}" for n, v in PRESET_GROUPS.items())
-               + "\n\nexamples:\n  benchmark qwen38                      # all text presets, via llama-swap (production sampling)\n"
-                 "  benchmark qwen38:l                    # a reasoning alias, with its filters\n"
-                 "  benchmark --prompt fast qwen38        # ~1 min smoke test (prose, json, tools)\n"
-                 "  benchmark --greedy --prompt prose,json qwen38 qwen38-hh   # deterministic, hash-comparable\n"
-                 "  benchmark --prompt vision --vision-answers qwen35-4b qwen35-2b lfm25-vl\n"
-                 "  benchmark --kernel --std --unload qwen38\n"
-                 "  benchmark --standalone --variant rocm --unload qwen38\n"
+               + "\n\nexamples:\n  benchmark my-model                    # fast presets, via llama-swap (production sampling)\n"
+                 "  benchmark my-model:l                  # a reasoning alias, with its filters\n"
+                 "  benchmark --prompt text my-model      # all text presets\n"
+                 "  benchmark --greedy --prompt prose,json my-model my-model-q8   # deterministic, hash-comparable\n"
+                 "  benchmark --prompt vision --vision-answers my-vlm other-vlm\n"
+                 "  benchmark --kernel --std --unload my-model\n"
+                 "  benchmark --standalone --variant rocm --unload my-model\n"
                  "  benchmark --ppl --unload <model> <other-quant>   # quality screen for a quant A/B\n"
                  "  benchmark --ppl --kld-base ref.dat --unload <model>   # KL-divergence vs a saved reference\n"
                  "  benchmark --list")
@@ -2107,7 +2107,7 @@ def main() -> int:
     # (greedy held it 09-12..09-15, sampled 09-08..09-12); --greedy is now the
     # opt-out. Rationale for going back: the default should be the number a user
     # can actually feel, and greedy is not it -- it OVERSTATES decode because draft
-    # acceptance collapses at production temperature (qwen38-fast 2026-09-12: prose
+    # acceptance collapses at production temperature (Qwen3.8-27B + MTP 2026-09-12: prose
     # +26 %, 71.4 vs 56.7 t/s, accept 44 vs 29 %; tools +7 %; json +2 %), and the
     # filters it bypasses (setParams sampling, the :l/:m/:x tiers) are part of what
     # the entry IS. Pass --greedy for a build/quant/flag A/B, where determinism and

@@ -27,9 +27,9 @@
 #     ROCmFPx weight formats (ROCmFP4 & co., GGUF types stock llama.cpp cannot
 #     load), kernels tuned for the batch widths speculative decoding verifies
 #     at, and adaptive draft sizing -- see the WITH_FPX arg below
-#   - OUR OWN fork (SelfRef/llama.cpp-rdna3) as *-rdna3 binaries: the same
-#     ROCmFPx base plus the unupstreamed RDNA3/RDNA3.5 Vulkan patches we have
-#     measured on gfx1100/1101/1151 -- see the WITH_RDNA3 arg below
+#   - SelfRef/llama.cpp-rdna as *-rdna binaries: the ROCmFPx formats on
+#     current upstream master, plus unupstreamed RDNA3/RDNA3.5 Vulkan patches
+#     measured on gfx1100/1101/1151 -- see the WITH_RDNA arg below
 #   - Vulkan builds of llama.cpp, whisper.cpp, sd.cpp and audio.cpp with a
 #     MODERN glslc. Upstream builds them on Ubuntu 24.04 with its stock glslc
 #     (shaderc 2023.8 / glslang 14), which cannot compile the
@@ -81,7 +81,7 @@
 #
 # Layout: llama.cpp is installed as self-contained directories
 # /opt/llama-vulkan, /opt/llama-rocm, /opt/llama-engram, /opt/llama-fpx and
-# /opt/llama-rdna3
+# /opt/llama-rdna
 # (binaries + their shared libs, RPATH $ORIGIN, ggml backends discovered next
 # to the executable) with symlinks in /usr/local/bin, so the builds never
 # share a libggml.
@@ -185,252 +185,47 @@ ARG LLAMA_COMMIT="master"
 # the build, so drift is never a silent no-op. Dry-run the whole set with
 # scripts/checkout-with-prs.sh on a local clone before changing it.
 #
-# This used to be two builds -- a "pure" llama-server with only #27952 and a
-# llama-server-next with the full set -- merged into one on 2026-09-06: the
-# full set had been the one actually serving models, and none of the PRs
-# touches CUDA/HIP sources, so the ROCm build takes the same tree. Set on
-# 2026-09-06 (all merged cleanly against master 9e0e2205; #28422 topk_moe
-# fusion conflicts with #28024 and was left out):
-#   Vulkan backend
-#   #27952 int8 coopmat1 matmul for RDNA3/4 (0cc4m) -- measured on an RX 7900
-#          XTX: pp512 +4.6% dense (Q4_K_XL), +18.5% MoE (Qwen3.6-35B-A3B
-#          Q4_K_M), decode unchanged. Dropped 2026-09-09 (conflict), RESTORED
-#          2026-09-10: #25773 (the mul_mm A-type spec constant it collided
-#          with) merged on 09-09 and the author rebased on top of it.
-#   #28024 rms_norm fusions (RMS_NORM+MUL+ADD, ROPE+VIEW+SET_ROWS) -- approved
-#   #27220 fuse UNARY(silu/gelu/sigmoid)+MUL incl. MoE shared-expert gating
-#          (2-3% on Qwen3.6 MoE upstream) -- approved
-#   #28253 type-aligned quantized GET_ROWS (correctness on views) -- approved
-#   #28457 small-M matmul tile selection for Qwen-shaped buckets (m=1/m=32)
-#   #28489 MMVQ path selection independent of batch size -- measured on an RX
-#          7900 XTX 2026-09-06 (together with #28507): llama-bench neutral, but
-#          server-level MoE decode with MTP +2-5 % (qwen36 prose 156.5 -> 164.5,
-#          json 191.5 -> 196.0, medians of 3) -- the small-M MTP verify batches
-#          take the MMVQ path. Dense qwen38 neutral. Changes output numerics.
-#   Models
-#   #28243 Qwen3.8-Flash-Next MTP draft head + draft-only sidecar loading
-#          (unsloth's upstream PR; supersedes the local #27836/#28097 rebases)
-#          -- MOVED to patches/28243-rebased.patch on 2026-09-15, see below
-#   #28265 keep Qwen3.5-family delta-net out-proj 2D (Strix Halo: +6-9% TG at
-#          batch 4-8 = our --parallel 2 + MTP verify batches)
-#   #28213 gather-based sparse attention for qwen4exp QSA decode (+50% tg
-#          @130k upstream claim; measured 0 on RADV 2026-09-02, kept for depth)
-#   #28136 direct pread()s for the lazy PLE/n-gram table (cold-start prefill;
-#          throughput-neutral when the page cache is warm)
-#   #28699 incremental pooled-key cache for the qwen4exp QSA indexer -- the
-#          block summaries were regathered over the whole context every token
-#          in every QSA layer (the dominant decode-at-depth cost of
-#          qwen38-flash); env kill switch LLAMA_QSA_NO_POOLED_CACHE=1. Ported
-#          from the same fork the fpx binary comes from -- to benchmark
-#   Speculative / server
-#   #27210 `--spec-type draft-mtp-adaptive` (opt-in; R9700 Qwen3.8-27B code
-#          53->72 t/s vs fixed n-max 3) -- to benchmark
-#   #28333 zero the MTP carrier at sequence start (determinism across requests)
+# One tree for both backends since 2026-09-06 (none of the PRs touches
+# CUDA/HIP sources, so the ROCm build takes the same tree).
+#
+# Current set, revised 2026-10-05 against master e117148a4:
+#   #28265 keep the Qwen3.5-family delta-net out-proj 2D (Strix Halo: +6-9 %
+#          TG at batch 4-8, i.e. --parallel 2 plus MTP verify batches)
 #   #25592 exact-position checkpoint restore for hybrid/recurrent models
-#          (agentic multi-turn @130k: 35 s -> 1.3 s turn restore) -- to benchmark
-# Trimmed on 2026-09-09 against master d4abd573 (dry-run merge of the whole
-# list; the two dropped PRs were FATAL for the build, not optional):
-#   retired as merged upstream: #28024, #27220, #28253 (and #28068 on 09-06).
-#   #27952 (int8 coopmat1) DROPPED -- no longer merges (conflict in
-#          ggml-vulkan.cpp). It is the one with measured value on RDNA3
-#          (pp512 +4.6% dense / +18.5% MoE; qwen36 server prefill 850 -> 1098
-#          t/s on 08-29), so PUT IT BACK the moment it merges upstream (it has
-#          an approval) or rebase it into patches/. Until then MoE prefill on
-#          this box is ~15% lower than the 09-06 image.
-#   #28136 (lazy PLE direct reads) DROPPED -- no longer merges (conflict in
-#          tools/llama-bench/llama-bench.cpp). NOTE this removes the
-#          `--lazy-mode on-direct` VALUE from llama-server: master only has
-#          on/auto/off, so any config using on-direct fails to start (the
-#          cloud repo's qwen38-flash entry was moved to `--lazy-mode on` in
-#          the same commit). Measured throughput-neutral with a warm page
-#          cache -- it only optimises cold start.
-# Revised 2026-09-10 against master df03399b (dry-run merge of the whole list,
-# scripts/checkout-with-prs.sh on a local blobless clone -- all eight merge
-# cleanly, so this list is what the build will actually apply):
-#   retired as merged upstream: #28457 (small-M matmul, merged 09-10) and
-#          #28330 (no indexer V cache, merged 09-10). #28422 (topk_moe fusion
-#          for prefill), the one that had to be left out on 09-06, and #25773
-#          are in master too.
-#   #27952 RESTORED -- see above. It is the reason this revision exists: with
-#          prefill (not decode t/s) the thing being optimised since 09-10, it
-#          is the only patch with a measured pp win on this card, and MoE
-#          prefill (qwen36, ling3) has been ~15 % down since it was dropped.
-#   #28489 (MMVQ path selection) DROPPED -- no longer merges (conflict in
-#          ggml-vulkan.cpp, 09-06 head vs current master). Its measured value
-#          was +2-5 % MoE *decode*, nothing on prefill, so it is not worth a
-#          local rebase; re-add if the author refreshes it.
-#   #28092 (server --cache-disk, a prompt cache that survives a process
-#          restart) EVALUATED AND LEFT OUT: it conflicts with #25592 in
-#          tools/server/server-context.cpp and #25592 is the bigger TTFT win
-#          here (exact-position checkpoint restore, 35 s -> 1.3 s). Worth
-#          revisiting when either side rebases -- with llama-swap swapping
-#          processes on this box, a disk-backed prompt cache is the one
-#          remaining structural prefill saving.
-# Retired as merged upstream: #28068 (GDN norm max->rsqrt, merged 2026-09-06).
-# Measured and NOT adopted: #28528 (Vulkan stream-k MUL_MAT: the shaders exist
-# for cm1 but the heuristic only enables them on coopmat2/NVIDIA, so it is a
-# no-op on RADV RDNA3 -- revisit if the cm1 gate lands), #28611 (RDNA3 L-tile
-# warp micro-dimension, +62 % pp on gfx1151: gated to UMA/iGPU on purpose and
-# does not merge; the underlying WM 64 -> 32 idea is untested on discrete
-# RDNA3), #27332 (MUL_MAT_VEC_ID density gate: batch>8 MoE decode, pp neutral,
-# and --parallel 2 + MTP keeps us at batch<=8), #28507 (FA shared-memory staging on the RDNA scalar
-# path: neutral on a 7900 XTX at kernel and server level, 2026-09-06), #25483 (MoE coopmat skip, +0.3%), #26284 + #26301
-# (HIP MMQ tuning / mmvdq: +2% pp, decode same, and #26284 carries RDNA4
-# changes its maintainer wants dropped), #22970 (stale, conflicts with master).
-# ADDED 2026-09-15 (survey of new/updated upstream PRs; all six test-merged on
-# top of master 38a5b42d + the seven PRs above + patches/28243-rebased.patch,
-# all clean). Nothing here is measured on this box yet -- this is the
-# "full experimental" set, and every entry is a candidate for removal if the
-# post-build benchmark says so:
-#   #25666 (NOW CARRIED AS patches/25666-rebased.patch, see the 2026-09-18
-#          revision below) Vulkan: do NOT enable MMVQ for speculative-decode
-#          steps on AMD. A spec step evaluates n = 1 + n_draft, which trips
-#          the "n > 1 means a batch" early-out in ggml_vk_should_use_mmvq()
-#          and takes the MMVQ path, where the Q8_1 activation quantization
-#          neither amortizes at that n NOR keeps the logits identical -- so
-#          it lowers draft ACCEPTANCE as well as speed. gfx1151, 35B-A3B MoE
-#          + MTP @33k: TG 75.2 -> 84.9 t/s (+12.9 %), acceptance 72-75 % ->
-#          83-85 %, prefill unchanged. Applies to the stock-Vulkan MTP
-#          entries (qwen38-bart, -hau, -hui); NOT to qwen38-fast (fpx fork
-#          takes no PRs) and NOT to qwen38-flash (HIP). Only gfx1151 data
-#          exists upstream -- the author is asking for discrete-GPU numbers,
-#          which this box can produce.
-#   #28927 context: drop the sched_need_reserve from set_causal_attn(). The
-#          causal flag only changes KQ mask CONTENTS, not graph topology, and
-#          allow_reuse() already compares it. mtmd toggles it twice per image
-#          chunk and each toggle forced a full scheduler reserve (new sched +
-#          worst-case graph + compute buffers) -- hundreds of ms at high n_ctx,
-#          two per video frame. We serve vision at ctx 32768. One line.
-#          (#28751 is the same idea and #28872 a broader variant -- one only.)
-#   #28956 Vulkan correctness: a mul_mat reading a slice of a larger cache took
-#          the head stride from the visible row count instead of the tensor, so
-#          every head but the first read the wrong data (repairs the Qwen3 AR
-#          --no-fa path). Does not obviously explain any of the three RADV
-#          qwen35-* faults that moved those entries to ROCm on 09-15, but it is
-#          the same neighbourhood (cache views) -- keep it in the tree for that
-#          re-test.
-#   #28876 server: allow RANK pooling to split prefill across physical batches
-#          for causal-decoder rerankers (Qwen3). Today a rerank document larger
-#          than one physical batch simply does not work, which is why the
-#          qwen3-rerank entry carries --ubatch-size 8192; with this, that
-#          workaround can go and documents may exceed 8192.
-#   #28901 MERGED UPSTREAM 2026-09-16 and REMOVED FROM THE LIST 2026-09-18
-#          (it is in master now; the checkout script had started skipping it
-#          with a "closed on GitHub" notice). Kept here for the reasoning:
-#          qwen4exp fused hyper-connection ops (gated hc_pre, null-comb
-#          hc_post). MATTERS FOR HIP, NOT VULKAN: it adds ggml-cuda/dsv4-hc.cu
-#          with both variants templated and leaves the CUDA supports_op alone,
-#          while its Vulkan hunk REJECTS both new variants (gate param != 0,
-#          src[3] == nullptr), so the auto_fhc probe turns the fusion off on
-#          Vulkan and those entries keep the unfused path. qwen38-flash runs
-#          llama-server-rocm, so it is the one that can win here. Upstream
-#          numbers are CPU-only (pp2048 +14 % on a DGX Spark). Keeps the
-#          build_hc_mix()/build_hc_combine() signatures and gates the fused
-#          path on il >= 0, so the MTP head call (il = -1) from the #28243
-#          patch is untouched. NOTE this is the same author's follow-up to the
-#          master gamma reshape that broke #28243 -- expect more churn here.
-#   #28943 HIP: skip fully masked KV tiles in the AMD WMMA flash-attention
-#          path (#28495). Improves HIP PREFILL when server slots share a
-#          unified KV cache, which since 2026-09-15 is qwen38-flash
-#          (--parallel 2) plus all three qwen35-* entries (--parallel 4) that
-#          moved to llama-server-rocm. Brand new, no reviews, and it changes FA
-#          math -- verify OUTPUT, not just t/s, before trusting it.
-# LOCAL VERIFICATION 2026-09-15 (both stages built here, not on CI:
-# `docker build --target llama-vulkan .` and `--target llama-rocm
-# --build-arg AMDGPU_TARGETS="gfx1100;gfx1101"` -- 176 s and ~7 min on this
-# box, vs hours of runner time, so test the merge set this way BEFORE pushing):
-#   both stages compile clean, including #28901's new ggml-cuda/dsv4-hc.cu
-#   under HIP and #28943's fattn-mma-f16.cuh changes.
-#   Binaries run from the :full runtime image (stage images have no Mesa ICD):
-#   - Vulkan: a greedy completion is BYTE-IDENTICAL to the shipped build.
-#   - #28876 CONFIRMED FIXED: a 1608-token rerank document at --ubatch-size 512
-#     is refused by the shipped build ("input is too large to process") and
-#     scored by this one. The qwen3-rerank entry's --ubatch-size 8192 can go.
-#   - HIP qwen4exp (qwen38-flash flags, ctx 8192): loads, output byte-identical
-#     to the shipped build, DRAFT ACCEPTANCE 0.714 / mean len 3.14 -- so the
-#     rebased #28243 patch works end to end (draft head + Q8_0 sidecar).
-#   - #28943's path (4 slots on one unified KV, FA on, HIP): coherent output.
-#   - #28901 is ACTIVE ON HIP ONLY, confirmed in the merged source: the CUDA/HIP
-#     supports_op takes DSV4_HC_PRE with the gate param and DSV4_HC_POST with a
-#     null comb, which is exactly what Vulkan rejects.
-#   NOT measured: every speed number. Decode t/s on a GPU shared with the live
-#   stack scattered +-20 % run to run (qwen35-2b 50-72 t/s on BOTH builds), so
-#   #25666 and #28901 need `benchmark` on a quiet box, not a smoke test.
-# Looked at and deliberately NOT added on 2026-09-15:
-#   #28092 (--cache-disk) refreshed 09-14 and merges into master again, but
-#          STILL conflicts with #25592 in tools/server/server-context.cpp on
-#          our tree -- the 09-10 trade is unchanged, #25592 is the bigger win.
-#   #28528 (stream-k MUL_MAT) touched 09-15 but is still enabled for coopmat2
-#          only: the cm1 shaders exist, the author declines to tune the cm1
-#          heuristic on NVIDIA hardware. Still a no-op on RADV -- and an
-#          opening for someone with an XTX to tune it.
-#   #28415 / #28440 (IQ4_XS MMQ/MMV) rebased + "optimize" on 09-15 with
-#          NOTHING addressing the RDNA3 degenerate output the 09-09 bisect
-#          found here (never reported upstream -- worth filing).
-#   #28849 (auto-fit tries model ctx x parallel slots under unified KV) -- not
-#          a win, a behaviour change: every entry here runs --fit on with
-#          --parallel 2/4 against huge native contexts, so it can start picking
-#          much larger contexts and reshuffling experts. Watch it land.
-#   #25483 (skip unneeded MoE work in the coopmat1 path) measured +0.3 % here
-#          on 09-06; not worth the rebase burden.
-# Revised 2026-09-15 against master 38a5b42d, after the CI build failed:
-#   #28243 (qwen4exp MTP) was DROPPED FROM THE LIST here and carried as
-#          patches/28243-rebased.patch, because master had moved the
-#          grouped-norm gammas (hc_*_norm, ple_norm_*) from a flat [hc_dim]
-#          tensor to [n_embd, hc] + TENSOR_ALLOW_RESHAPE while the PR rewrote
-#          the same lines to load them with MTP-aware flags. RESTORED TO THE
-#          LIST 2026-09-18, in its original slot after 27952: the author
-#          rebased the PR that day and it merges clean again, so the local
-#          patch is gone (see patches/README.md). Note it had ALREADY gone
-#          stale against master 5b335f413 -- its src/llama-arch.h hunk no
-#          longer applied -- so this was a second latent build failure, not
-#          just tidying. This is the MTP draft head qwen38-flash runs on.
-# Revised 2026-09-18 after the CI build failed (run 35354559401). Verified by
-# building the llama-vulkan stage locally against master ec9281505, which is
-# newer than the 5b335f413 the failed run pinned:
-#   #25666 (Vulkan MMVQ / spec-decode) DROPPED FROM THE LIST and carried as
-#          patches/25666-rebased.patch instead. The PR itself has not moved
-#          since 2026-08-26 -- master drifted under it, and GitHub marks it
-#          CONFLICTING upstream too. The conflict is pure placement, not
-#          substance: master deleted the "// Device tuning" comment that the
-#          PR's first hunk anchors its new MMVQ_MAX_DECODE_LIKE_N constant to,
-#          so git had nothing to attach the insertion to; the other three hunks
-#          still auto-merge. The rebased patch is byte-for-byte the PR's own
-#          four-hunk diff, re-anchored -- nothing was reinterpreted. Verified
-#          2026-09-18: every other PR in the list merges clean on ec9281505,
-#          this is the only one that does not. Drop the patch and
-#          put #25666 back in the list the moment the author rebases it.
-#          STILL UNMEASURED on this box (see the 09-15 note) -- if `benchmark`
-#          does not show the gfx1151 gain on an XTX, delete it rather than
-#          carrying a patch for nothing.
-# Revised 2026-09-24:
-#   #27952 (int8 coopmat1 MMQ) RETIRED -- merged upstream (70c4e1582), so
-#          master carries it now. Its final form folds in #28440 (IQ4_XS cm1)
-#          and brings #28415 (IQ4_XS MMQ/MMV) along with master, the pair that
-#          produced subtly broken UD-Q4_K_XL output on RDNA3 on 09-09 -- check
-#          the text, not only t/s, on any IQ4_XS-bearing quant.
-#   #28943 (HIP masked-KV-tile skip) RETIRED -- closed without merge on 09-22
-#          (the maintainer asked for a human redesign).
-# Revised 2026-10-05 against master e117148a4:
-#   #28956 (exact A/B descriptor ranges in mul_mm) and #28876 (RANK pooling
-#          batch splitting for causal rerankers) RETIRED -- merged upstream.
-#   #28243 (qwen4exp MTP) RETIRED -- closed, superseded by #29761 (Qwen4Exp
-#          MTP), merged 10-01.
-#   #28927 (no scheduler re-reserve on set_causal_attn) RETIRED -- closed,
-#          superseded by #28751, merged 09-28.
-#   #28213 (qwen4exp gather-based QSA decode) RETIRED -- closed 10-01: master
-#          has CUDA sparse FA for qwen4exp and GLM5-Next's shared k-pool cache
-#          and matches or beats it at every depth (the author's own re-test).
-#   #28699 (qwen4exp incremental pooled-key cache) DROPPED -- still open but
-#          no longer merges: master's own k-pool cache (GLM5-Next) took the
-#          same lines and, per #28213's close, matches it.
-#   #27210 (draft-mtp-adaptive) DROPPED -- no longer merges with master's
-#          rejection-sampling speculative rewrite (#27694). The *-rdna3
-#          binaries still carry draft-mtp-adaptive, re-ported onto it.
-#   #28333 (zero the MTP carrier at sequence start) MOVED to
-#          patches/28333-rebased.patch: master migrated the MTP catch-up loop
-#          to llama_batch_ext, so the PR's set_h() call has nothing to anchor
-#          to. The patch is the same zero-fill, re-expressed in the new loop.
+#          (agentic multi-turn @130k: 35 s -> 1.3 s turn restore)
+# plus two PRs carried as rebased patches because they no longer merge as-is
+# (see patches/README.md): #25666 (no MMVQ for speculative-decode steps on
+# AMD; only gfx1151 numbers exist upstream -- delete it if a discrete-GPU
+# benchmark shows no gain) and #28333 (zero the MTP carrier at sequence start).
+#
+# Retired, merged upstream: #27952 (int8 coopmat1 MMQ for RDNA3/4, 09-24;
+#   pp512 +4.6 % dense / +18.5 % MoE on an RX 7900 XTX. Its final form also
+#   brings the IQ4_XS MMQ/MMV pair #28440/#28415, which produced subtly broken
+#   UD-Q4_K_XL output on RDNA3 when tested on 09-09 -- check the text, not
+#   only t/s, on IQ4_XS-bearing quants), #28024, #27220, #28253, #28068,
+#   #28457, #28330, #28901, #28956, #28876.
+# Retired, superseded or closed: #28243 (-> #29761 Qwen4Exp MTP), #28927
+#   (-> #28751), #28213 (master's sparse FA and k-pool cache match it),
+#   #28943 (closed without merge).
+# Dropped because they no longer merge: #28699 (master's own k-pool cache
+#   took the same lines), #27210 (draft-mtp-adaptive; conflicts with the
+#   rejection-sampling rewrite #27694 -- the *-rdna binaries still carry it),
+#   #28489 (MMVQ path selection, +2-5 % MoE decode only), #28136 (lazy PLE
+#   direct reads; this removed the `--lazy-mode on-direct` value, master has
+#   only on/auto/off).
+# Evaluated and left out: #28092 (--cache-disk; conflicts with #25592, the
+#   bigger TTFT win), #28528 (stream-k MUL_MAT; the cm1 heuristic is only
+#   enabled on coopmat2, a no-op on RADV), #28611 (RDNA3 L-tile warp
+#   micro-dimension; gated to UMA on purpose, does not merge), #27332
+#   (MUL_MAT_VEC_ID density gate; batch > 8 MoE decode only), #28507 (FA shmem
+#   staging; neutral on a 7900 XTX), #25483 (+0.3 %), #26284 + #26301 (HIP MMQ;
+#   +2 %), #22970 (stale), #28849 (auto-fit over ctx x parallel slots; a
+#   behaviour change, not a speed-up).
+#
+# Test a changed set locally before pushing: `docker build --target
+# llama-vulkan .` (and `--target llama-rocm --build-arg AMDGPU_TARGETS=gfx1100`)
+# takes minutes instead of hours of runner time. The dated history of every
+# decision above is in this file's git log.
 # patches/*.patch (local rebased patches) apply after the merges to both
 # backends -- so a patch has to be generated against the tree with ALL the
 # other merges in it, not just against master (see patches/README.md).
@@ -485,21 +280,20 @@ ARG LLAMA_PATCHES_HEADS=""
 # llama-memory-hybrid-idx.*, qwen4exp.cpp, dflash.cpp, convert_hf_to_gguf.py,
 # test-backend-ops.cpp, tools/ui/CMakeLists.txt). Merging a single PR head is
 # no better: the head carries master with it, so it hits the same conflicts.
-# Consequence to keep in mind when reading benchmark rows: the entries on
-# `llama-server-fpx` (i.e. qwen38) get NONE of the Vulkan prefill work in
-# LLAMA_PATCHES or in recent master -- #27952, #28457 and #28422 all miss them.
-# The fork's own engine work is still ahead of stock on this card (+15.2 % on a
-# 32k prompt, 2026-09-10), so the answer is to watch the fork for its next
-# upstream merge, not to hand-rebase it here.
+# Consequence to keep in mind when reading benchmark rows: `llama-server-fpx`
+# gets NONE of the Vulkan work in LLAMA_PATCHES or in master since 08-30
+# (#27952, #28457, #28422 ...). The fork has not merged upstream since
+# (11bfe8a6, 2026-09-07); the -rdna stage below is the same formats on
+# current master, so prefer it for ROCmFPx models.
 ARG WITH_FPX=true
 ARG FPX_REPO=https://github.com/LaurentZuijdwijk/llama.cpp.git
 ARG FPX_BRANCH=master
 ARG FPX_COMMIT=""
 
-# ── RDNA3 fork (SelfRef/llama.cpp-rdna3) ───────────────────────────────
-# OUR fork of ggml-org/llama.cpp, built as a FOURTH Vulkan llama.cpp install
-# (/opt/llama-rdna3, *-rdna3 binaries). Created 2026-09-18 because the two
-# things this hardware needs have never been in one tree:
+# ── RDNA fork (SelfRef/llama.cpp-rdna) ───────────────────────────────
+# SelfRef's fork of ggml-org/llama.cpp, built as another Vulkan llama.cpp
+# install (/opt/llama-rdna, *-rdna binaries). Created 2026-09-18 because the
+# two things RDNA3 hardware needs had never been in one tree:
 #
 #   - the ROCmFPx weight formats (as in the fpx stage above), which upstream
 #     does not carry and probably will not until 0cc4m's #28898 lands FP8/NVFP4
@@ -511,36 +305,35 @@ ARG FPX_COMMIT=""
 #
 # The fpx stage can host neither: it tracks someone else's fork, which cannot
 # take LLAMA_PATCHES (11 conflicts, see above) and whose owner decides what it
-# carries. This one is ours: branch `rdna3` = the ROCmFPx base with the patches
-# we have measured on OUR cards, rebased on our schedule, every patch on its own
-# `carry/*` branch so one bad upstream rebase does not take the rest with it.
+# carries. Branch `rdna` = the ROCmFPx base plus upstream master plus only
+# the patches that measured as a win on the target cards, every patch on its
+# own `carry/*` branch so one bad upstream merge does not take the rest with it.
 #
 # Targets, and the reason for the name: gfx1100 (RX 7900 XTX), gfx1101
 # (RX 7800 XT) and gfx1151 (Strix Halo / Ryzen AI Max+ 395) -- one architecture
 # family (RDNA3 + RDNA3.5). Nothing else is accepted into the branch.
 #
-# Like the fpx stage this is Vulkan-only and applies NO upstream PRs YET: the
-# branch is still based at the fork point (upstream 0190529e, 2026-08-30) so PR
-# heads do not apply. Moving that base up -- and with it finally getting
-# LLAMA_PATCHES *and* FP4 in ONE binary -- is the point of owning the fork, and
-# it is a re-port, not a rebase: #25773 rewrote matmul pipeline creation and
-# #28732 split the Vulkan sources. Do it in steps, benchmarking each one.
+# Vulkan-only, and LLAMA_PATCHES is NOT applied here: the branch merges
+# upstream master itself (re-ported onto it 2026-09-18, last merged 2026-10-07
+# at 36a73916) and carries the upstream PRs it wants as its own commits. What
+# it carries and why is in the fork's README.
 #
-# ALWAYS build with RDNA3_COMMIT pinned -- scripts/resolve-refs.sh resolves it for
+# ALWAYS build with RDNA_COMMIT pinned -- scripts/resolve-refs.sh resolves it for
 # you. The clone happens inside a RUN whose cache key is the ARG VALUES, so a
-# build that passes only RDNA3_BRANCH silently reuses the layer from whatever the
+# build that passes only RDNA_BRANCH silently reuses the layer from whatever the
 # branch pointed at last time: measured 2026-09-18, a rebuild after a force-push
 # returned the PREVIOUS tip's binary and reported the old commit in
 # /versions.txt. The same trap applies to FPX_BRANCH and ENGRAM_BRANCH.
 # Pass the FULL 40-char sha, never an abbreviation: the clone is a
 # `git fetch --depth=1 origin <ref>`, and GitHub rejects a short sha in a want
-# line -- the stage then fails with a bare `exit code: 128`. The same canaries as the fpx stage guard it: if a rebase ever drops the
+# line -- the stage then fails with a bare `exit code: 128`.
+# The same canaries as the fpx stage guard it: if a merge ever drops the
 # ROCmFPx types or adaptive drafting, the build FAILS instead of shipping a
-# plain llama.cpp under the -rdna3 name.
-ARG WITH_RDNA3=true
-ARG RDNA3_REPO=https://github.com/SelfRef/llama.cpp-rdna3.git
-ARG RDNA3_BRANCH=rdna3
-ARG RDNA3_COMMIT=""
+# plain llama.cpp under the -rdna name.
+ARG WITH_RDNA=true
+ARG RDNA_REPO=https://github.com/SelfRef/llama.cpp-rdna.git
+ARG RDNA_BRANCH=rdna
+ARG RDNA_COMMIT=""
 
 # ── EngramHalo.cpp ─────────────────────────────────────────────────────
 # EngramHalo.cpp: Aristo94's llama.cpp fork tuned for Qwen 3.8 Flash-Next on
@@ -832,24 +625,24 @@ grep -q -- '--spec-draft-adaptive' <<<"$SHELP" || {
   > /install/build-info/llama-fpx
 BUILD
 
-# ── Build the RDNA3 fork (Vulkan) ──────────────────────────────────────
-# Our own fork -> /opt/llama-rdna3, *-rdna3 binaries. Identical toolchain and
-# flags to the fpx stage (same vulkan-builder, same ccache); see the WITH_RDNA3
+# ── Build the RDNA fork (Vulkan) ──────────────────────────────────────
+# SelfRef/llama.cpp-rdna -> /opt/llama-rdna, *-rdna binaries. Identical toolchain and
+# flags to the fpx stage (same vulkan-builder, same ccache); see the WITH_RDNA
 # arg above for what the branch carries and why it exists next to the fpx one.
 
-FROM vulkan-builder AS llama-rdna3
-ARG RDNA3_REPO
-ARG RDNA3_BRANCH
-ARG RDNA3_COMMIT
+FROM vulkan-builder AS llama-rdna
+ARG RDNA_REPO
+ARG RDNA_BRANCH
+ARG RDNA_COMMIT
 RUN --mount=type=cache,id=ccache-vulkan,target=/ccache <<'BUILD'
 #!/bin/bash
 set -euo pipefail
 
-REF="${RDNA3_COMMIT:-${RDNA3_BRANCH}}"
-echo "=== Cloning the RDNA3 fork (${RDNA3_BRANCH} @ ${REF}) ==="
-mkdir -p /src/llama-rdna3 && cd /src/llama-rdna3
+REF="${RDNA_COMMIT:-${RDNA_BRANCH}}"
+echo "=== Cloning the RDNA3 fork (${RDNA_BRANCH} @ ${REF}) ==="
+mkdir -p /src/llama-rdna && cd /src/llama-rdna
 git init -q
-git remote add origin "${RDNA3_REPO}"
+git remote add origin "${RDNA_REPO}"
 git fetch --depth=1 origin "${REF}"
 git checkout -q FETCH_HEAD
 echo "fork at $(git rev-parse HEAD)"
@@ -880,9 +673,9 @@ cmake -B build \
     -DLLAMA_BUILD_EXAMPLES=OFF \
     -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
     -DCMAKE_INSTALL_RPATH='$ORIGIN' \
-    2>&1 | tee /tmp/configure-rdna3.log
+    2>&1 | tee /tmp/configure-rdna.log
 for ext in GL_EXT_integer_dot_product GL_EXT_bfloat16 GL_KHR_cooperative_matrix; do
-    line=$(grep -i "$ext" /tmp/configure-rdna3.log || true)
+    line=$(grep -i "$ext" /tmp/configure-rdna.log || true)
     echo "  cmake: ${line:-<no message for $ext>}"
     if grep -qi "not supported" <<<"$line"; then
         echo "FATAL: CMake reports $ext unsupported by glslc" >&2; exit 1; fi
@@ -890,11 +683,11 @@ done
 cmake --build build --config Release -j"$(nproc)"
 
 echo "=== Collecting ==="
-OUT=/install/llama-rdna3
+OUT=/install/llama-rdna
 mkdir -p "$OUT" /install/build-info
 for bin in llama-server llama-cli llama-bench llama-quantize llama-perplexity; do
     [ -f "build/bin/$bin" ] || { echo "FATAL: $bin not built" >&2; exit 1; }
-    cp "build/bin/$bin" "$OUT/${bin}-rdna3"
+    cp "build/bin/$bin" "$OUT/${bin}-rdna"
 done
 cp -P build/bin/*.so* "$OUT/"
 ls "$OUT"/libggml-cpu-*.so >/dev/null 2>&1 || { echo "FATAL: no ggml-cpu variants built" >&2; exit 1; }
@@ -926,20 +719,20 @@ done
 # The whole point of this stage: the ROCmFPx tensor types and adaptive
 # drafting must be present. If a later upstream merge in the fork drops
 # either, this build fails instead of silently shipping a plain llama.cpp
-# under the -rdna3 name (config entries that reference these files would then
+# under the -rdna name (config entries that reference these files would then
 # fail to load a model at runtime).
 # (both binaries print their help to stdout and EXIT 1, so capture first --
 # a `cmd | grep` would fail the build through `pipefail`, not through grep.)
-QHELP=$("$OUT/llama-quantize-rdna3" --help 2>&1 || true)
+QHELP=$("$OUT/llama-quantize-rdna" --help 2>&1 || true)
 grep -q 'Q4_0_ROCMFP4_FAST' <<<"$QHELP" || {
-    echo "FATAL: llama-quantize-rdna3 does not know the ROCmFPx types -- the fork lost them" >&2
+    echo "FATAL: llama-quantize-rdna does not know the ROCmFPx types -- the fork lost them" >&2
     head -5 <<<"$QHELP" >&2; exit 1; }
-SHELP=$("$OUT/llama-server-rdna3" --help 2>&1 || true)
+SHELP=$("$OUT/llama-server-rdna" --help 2>&1 || true)
 grep -q -- '--spec-draft-adaptive' <<<"$SHELP" || {
-    echo "FATAL: llama-server-rdna3 has no --spec-draft-adaptive -- the fork lost adaptive drafting" >&2; exit 1; }
-{ echo "llama_rdna3_commit: $(git rev-parse HEAD) (${RDNA3_REPO} @ ${RDNA3_BRANCH})";
-  echo "llama_rdna3_types: $(sed -n 's/^ *[0-9]* *or *\(Q[0-9]_[0-9]_ROCM[A-Z0-9_]*\) .*/\1/p' <<<"$QHELP" | sort -u | tr '\n' ' ')"; } \
-  > /install/build-info/llama-rdna3
+    echo "FATAL: llama-server-rdna has no --spec-draft-adaptive -- the fork lost adaptive drafting" >&2; exit 1; }
+{ echo "llama_rdna_commit: $(git rev-parse HEAD) (${RDNA_REPO} @ ${RDNA_BRANCH})";
+  echo "llama_rdna_types: $(sed -n 's/^ *[0-9]* *or *\(Q[0-9]_[0-9]_ROCM[A-Z0-9_]*\) .*/\1/p' <<<"$QHELP" | sort -u | tr '\n' ' ')"; } \
+  > /install/build-info/llama-rdna
 BUILD
 
 # ── Build whisper.cpp (Vulkan) ─────────────────────────────────────────
@@ -1578,16 +1371,16 @@ FROM llama-fpx AS llama-fpx-true
 FROM fpx-none  AS llama-fpx-false
 FROM llama-fpx-${WITH_FPX} AS llama-fpx-sel
 
-# ── RDNA3 fork selection (WITH_RDNA3) ──────────────────────────────────
+# ── RDNA3 fork selection (WITH_RDNA) ──────────────────────────────────
 # Same shape as the fpx switch above: Vulkan-only, in BOTH published tags,
 # independent of WITH_ROCM.
 
-FROM alpine:3 AS rdna3-none
-RUN mkdir -p /install/llama-rdna3 /install/build-info
+FROM alpine:3 AS rdna-none
+RUN mkdir -p /install/llama-rdna /install/build-info
 
-FROM llama-rdna3 AS llama-rdna3-true
-FROM rdna3-none  AS llama-rdna3-false
-FROM llama-rdna3-${WITH_RDNA3} AS llama-rdna3-sel
+FROM llama-rdna AS llama-rdna-true
+FROM rdna-none  AS llama-rdna-false
+FROM llama-rdna-${WITH_RDNA} AS llama-rdna-sel
 
 # ══════════════════════════════════════════════════════════════════════
 # ── Final image: Ubuntu 24.04 runtime (+ ROCm) + everything built above ──
@@ -1603,7 +1396,7 @@ ARG QWEN_SHARP_TEMPLATE_URL
 ARG WITH_ROCM
 ARG WITH_ENGRAM
 ARG WITH_FPX
-ARG WITH_RDNA3
+ARG WITH_RDNA
 
 LABEL org.opencontainers.image.source="https://github.com/SelfRef/llama-swap-rdna" \
       org.opencontainers.image.description="llama-swap unified image for AMD GPUs (ROCm + Vulkan)"
@@ -1699,7 +1492,7 @@ COPY --from=whisper-rocm-sel /install/bin/ /usr/local/bin/
 COPY --from=sd-rocm-sel      /install/bin/ /usr/local/bin/
 COPY --from=llama-engram-sel /install/llama-engram/ /opt/llama-engram/
 COPY --from=llama-fpx-sel    /install/llama-fpx/ /opt/llama-fpx/
-COPY --from=llama-rdna3-sel  /install/llama-rdna3/ /opt/llama-rdna3/
+COPY --from=llama-rdna-sel  /install/llama-rdna/ /opt/llama-rdna/
 # build-info of every stage -> /versions.txt below
 COPY --from=llama-vulkan     /install/build-info/ /tmp/build-info/
 COPY --from=whisper-vulkan   /install/build-info/ /tmp/build-info/
@@ -1711,7 +1504,7 @@ COPY --from=whisper-rocm-sel /install/build-info/ /tmp/build-info/
 COPY --from=sd-rocm-sel      /install/build-info/ /tmp/build-info/
 COPY --from=llama-engram-sel /install/build-info/ /tmp/build-info/
 COPY --from=llama-fpx-sel    /install/build-info/ /tmp/build-info/
-COPY --from=llama-rdna3-sel  /install/build-info/ /tmp/build-info/
+COPY --from=llama-rdna-sel  /install/build-info/ /tmp/build-info/
 RUN for bin in llama-server llama-cli llama-tts llama-bench; do \
         ln -sf "/opt/llama-vulkan/$bin" "/usr/local/bin/$bin"; \
         if [ "${WITH_ROCM}" = "true" ]; then \
@@ -1729,11 +1522,11 @@ RUN for bin in llama-server llama-cli llama-tts llama-bench; do \
             ln -sf "/opt/llama-fpx/$bin-fpx" "/usr/local/bin/$bin-fpx"; \
         done; \
     else rmdir /opt/llama-fpx; fi \
-    && if [ "${WITH_RDNA3}" = "true" ]; then \
+    && if [ "${WITH_RDNA}" = "true" ]; then \
         for bin in llama-server llama-cli llama-bench llama-quantize llama-perplexity; do \
-            ln -sf "/opt/llama-rdna3/$bin-rdna3" "/usr/local/bin/$bin-rdna3"; \
+            ln -sf "/opt/llama-rdna/$bin-rdna" "/usr/local/bin/$bin-rdna"; \
         done; \
-    else rmdir /opt/llama-rdna3; fi \
+    else rmdir /opt/llama-rdna; fi \
     && ldconfig
 
 # Example config with both backends; override by mounting /etc/llama-swap/config
@@ -1790,9 +1583,9 @@ if [ "${WITH_FPX}" = "true" ]; then
     BINS="$BINS llama-server-fpx llama-cli-fpx llama-bench-fpx llama-quantize-fpx llama-perplexity-fpx"
     SERVERS="$SERVERS llama-server-fpx"
 fi
-if [ "${WITH_RDNA3}" = "true" ]; then
-    BINS="$BINS llama-server-rdna3 llama-cli-rdna3 llama-bench-rdna3 llama-quantize-rdna3 llama-perplexity-rdna3"
-    SERVERS="$SERVERS llama-server-rdna3"
+if [ "${WITH_RDNA}" = "true" ]; then
+    BINS="$BINS llama-server-rdna llama-cli-rdna llama-bench-rdna llama-quantize-rdna llama-perplexity-rdna"
+    SERVERS="$SERVERS llama-server-rdna"
 fi
 for bin in $BINS; do
     out=$(ldd "$(readlink -f "$(command -v "$bin")")")
@@ -1802,7 +1595,7 @@ for bin in $BINS; do
         exit 1
     fi
 done
-for lib in /opt/llama-vulkan/*.so* $([ "${WITH_ROCM}" = "true" ] && echo /opt/llama-rocm/*.so*) $([ -d /opt/llama-engram ] && echo /opt/llama-engram/*.so*) $([ -d /opt/llama-fpx ] && echo /opt/llama-fpx/*.so*) $([ -d /opt/llama-rdna3 ] && echo /opt/llama-rdna3/*.so*); do
+for lib in /opt/llama-vulkan/*.so* $([ "${WITH_ROCM}" = "true" ] && echo /opt/llama-rocm/*.so*) $([ -d /opt/llama-engram ] && echo /opt/llama-engram/*.so*) $([ -d /opt/llama-fpx ] && echo /opt/llama-fpx/*.so*) $([ -d /opt/llama-rdna ] && echo /opt/llama-rdna/*.so*); do
     if ldd "$lib" | grep -q 'not found'; then
         echo "FATAL: $lib has unresolved libraries" >&2; ldd "$lib" | grep 'not found' >&2; exit 1; fi
 done
@@ -1853,7 +1646,7 @@ first() { awk -v k="$1" '$1==k {print $2; exit}' "/tmp/build-info/$2"; }
   fi
   echo "mesa_vulkan_drivers: $(dpkg-query -W -f '${Version}' mesa-vulkan-drivers) (${MESA_PPA:-ubuntu})"
   echo "cpu_variants: $(ls /opt/llama-vulkan/libggml-cpu-*.so | sed 's|.*/libggml-cpu-||; s|\.so||' | tr '\n' ' ')"
-  for f in llama-swap llama-vulkan llama-rocm llama-engram llama-fpx llama-rdna3 whisper-vulkan whisper-rocm sd-vulkan sd-rocm audiocpp; do
+  for f in llama-swap llama-vulkan llama-rocm llama-engram llama-fpx llama-rdna whisper-vulkan whisper-rocm sd-vulkan sd-rocm audiocpp; do
     [ -f "/tmp/build-info/$f" ] && cat "/tmp/build-info/$f"
   done
   echo "qwen_chat_template: $(grep -o 'template_version = "[^"]*"' /etc/llama-swap/templates/qwen-fixed.jinja | head -1 | cut -d'"' -f2) (${QWEN_TEMPLATE_URL})"

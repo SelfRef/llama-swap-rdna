@@ -19,7 +19,7 @@ on:
       - .github/workflows/build.yml
   schedule:
     # Rebuild every 3 days from the current default branches of llama-swap,
-    # llama.cpp (+ the ROCmFPx fork and our own RDNA3 fork), whisper.cpp,
+    # llama.cpp (+ the ROCmFPx fork and llama.cpp-rdna), whisper.cpp,
     # stable-diffusion.cpp,
     # audio.cpp and EngramHalo,
     # with the current heads of the merged PRs. Scheduled runs publish both
@@ -119,7 +119,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [llama-vulkan, llama-fpx, llama-rdna3, whisper-vulkan, sd-vulkan, audiocpp, llama-swap-build]
+        target: [llama-vulkan, llama-fpx, llama-rdna, whisper-vulkan, sd-vulkan, audiocpp, llama-swap-build]
     steps:
       - uses: actions/checkout@v7
       - uses: docker/setup-buildx-action@v4
@@ -270,7 +270,7 @@ jobs:
           cache-from: |
             type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-llama-vulkan
             type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-llama-fpx
-            type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-llama-rdna3
+            type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-llama-rdna
             type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-whisper-vulkan
             type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-sd-vulkan
             type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-audiocpp
@@ -292,7 +292,7 @@ jobs:
           cache-from: |
             type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-llama-vulkan
             type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-llama-fpx
-            type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-llama-rdna3
+            type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-llama-rdna
             type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-whisper-vulkan
             type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-sd-vulkan
             type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-audiocpp
@@ -364,7 +364,7 @@ jobs:
           cache-from: |
             type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-llama-vulkan
             type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-llama-fpx
-            type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-llama-rdna3
+            type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-llama-rdna
             type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-whisper-vulkan
             type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-sd-vulkan
             type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-audiocpp
@@ -390,7 +390,7 @@ jobs:
           cache-from: |
             type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-llama-vulkan
             type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-llama-fpx
-            type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-llama-rdna3
+            type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-llama-rdna
             type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-whisper-vulkan
             type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-sd-vulkan
             type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-audiocpp
