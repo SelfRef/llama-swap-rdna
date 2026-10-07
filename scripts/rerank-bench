@@ -88,7 +88,8 @@ class Swap:
                                      self.headers, method=method)
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as r:
-                return json.load(r)
+                raw = r.read()  # /unload answers text/plain "OK"
+                return json.loads(raw) if r.headers.get_content_type() == "application/json" else raw.decode()
         except urllib.error.HTTPError as e:
             if e.code == 401:
                 raise UserError("llama-swap rejected the API key (401) -- set LLAMA_SWAP_API_KEY")
