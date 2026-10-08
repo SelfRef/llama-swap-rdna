@@ -4,6 +4,28 @@ The image has no version numbers: every push and the scheduled rebuild publish
 from the then-current upstream branches, so changes are grouped by date. Newest
 first. The exact revisions inside any given image are in its `/versions.txt`.
 
+## 2026-10-08
+
+- **ROCm targets reduced to `gfx1100;gfx1101;gfx1151;gfx1200;gfx1201`** (RX 7900,
+  RX 7800/7700, Strix Halo, RX 9070/9060). Dropped from the published `:full`:
+  gfx1030 (RDNA2), gfx1102 (RX 7600) and gfx1150 (Strix Point). Those cards
+  keep the Vulkan binaries, and each target is one `AMDGPU_TARGETS` entry away
+  for a local build. The README's "Choosing ROCm vs Vulkan" now has a per-GPU
+  table of what is compiled in and how to enable the rest. Every HIP target
+  multiplies the compile time of the ROCm stages, so fewer targets shorten
+  them directly. `LLAMA_FA_ALL_QUANTS` is unchanged.
+- **CI: the final image jobs no longer recompile the engines.** They imported
+  the stage jobs' registry caches but missed them, so the `:full` job rebuilt
+  every engine itself (3.5 h after the stage jobs had finished; the `:vulkan`
+  job 42 min). Each stage job now pushes just its output as
+  `:stage-<stage>-<run id>`, built from new `<stage>-out` stages in the
+  Dockerfile. The final jobs take those as named build contexts, which replace
+  the builder stages, so they only assemble.
+- **CI: compiler caches survive between runs.** The ccache, Go and npm cache
+  mounts are kept in the Actions cache per stage
+  (`reproducible-containers/buildkit-cache-dance`), so a stage whose source
+  moved recompiles only what changed instead of starting from zero.
+
 ## 2026-10-07
 
 - **New `exl3-server`** (`:full` tag, gfx1100 only):

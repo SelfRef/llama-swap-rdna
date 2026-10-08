@@ -106,8 +106,12 @@ jobs:
           { echo 'build_args<<EOF'; cat /tmp/build-args; echo 'EOF'; } >> "$GITHUB_OUTPUT"
           { echo '### Resolved refs'; echo '```'; cat /tmp/build-args; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
 
-  # One job per builder stage, in parallel; results land in per-stage registry
-  # caches that the assemble jobs reuse. Vulkan stages always run.
+  # One job per builder stage, in parallel. Each builds `<stage>-out` (just the
+  # files the final stage copies, see the Dockerfile) and pushes it as
+  # :stage-<stage>-<run id>; the assemble jobs below take those images as named
+  # build contexts, so they never compile anything themselves. The per-stage
+  # registry cache still makes an unchanged stage a cache hit here. Vulkan
+  # stages always run; on PRs nothing is pushed.
   build-stages-vulkan:
     needs: prepare
     runs-on: ubuntu-latest
@@ -122,6 +126,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: docker/setup-buildx-action@v4
+        id: buildx
       - name: Log in to GHCR
         if: github.event_name != 'pull_request'
         uses: docker/login-action@v4
@@ -129,6 +134,30 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      # The RUN --mount=type=cache directories (ccache, Go, npm) live inside the
+      # runner's BuildKit and die with it, so every changed stage used to
+      # compile from zero. Keep them in the Actions cache between runs: restore
+      # the newest one for this stage, inject it into BuildKit before the
+      # build, extract it again afterwards (post step) and save it under this
+      # run's key. Stages that did not change hit the registry cache and never
+      # open the mount.
+      - name: Restore cache mounts
+        uses: actions/cache@v6
+        with:
+          path: cache-mounts
+          key: mounts-${{ matrix.target }}-${{ github.run_id }}
+          restore-keys: mounts-${{ matrix.target }}-
+      - name: Inject cache mounts into BuildKit
+        uses: reproducible-containers/buildkit-cache-dance@v3
+        with:
+          builder: ${{ steps.buildx.outputs.name }}
+          cache-map: |
+            {
+              "cache-mounts/ccache-vulkan": {"target": "/ccache", "id": "ccache-vulkan"},
+              "cache-mounts/go-build": {"target": "/root/.cache/go-build", "id": "go-build"},
+              "cache-mounts/go-mod": {"target": "/go/pkg/mod", "id": "go-mod"},
+              "cache-mounts/npm": {"target": "/root/.npm", "id": "npm"}
+            }
       # GHCR intermittently answers blob GETs with 429 (sub-second retry-after)
       # and buildx treats it as fatal, so retry the step once; the registry
       # cache makes the second pass cheap.
@@ -138,9 +167,11 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: .
-          target: ${{ matrix.target }}
+          target: ${{ matrix.target }}-out
           platforms: linux/amd64
-          push: false
+          push: ${{ github.event_name != 'pull_request' }}
+          provenance: false
+          tags: ${{ needs.prepare.outputs.image }}:stage-${{ matrix.target }}-${{ github.run_id }}
           build-args: ${{ needs.prepare.outputs.build_args }}
           cache-from: type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-${{ matrix.target }}
           cache-to: ${{ github.event_name != 'pull_request' && format('type=registry,ref={0}:buildcache-{1},mode=max', needs.prepare.outputs.image, matrix.target) || '' }}
@@ -149,14 +180,16 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: .
-          target: ${{ matrix.target }}
+          target: ${{ matrix.target }}-out
           platforms: linux/amd64
-          push: false
+          push: ${{ github.event_name != 'pull_request' }}
+          provenance: false
+          tags: ${{ needs.prepare.outputs.image }}:stage-${{ matrix.target }}-${{ github.run_id }}
           build-args: ${{ needs.prepare.outputs.build_args }}
           cache-from: type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-${{ matrix.target }}
           cache-to: ${{ github.event_name != 'pull_request' && format('type=registry,ref={0}:buildcache-{1},mode=max', needs.prepare.outputs.image, matrix.target) || '' }}
 
-  # The ROCm stages are fat HIP builds (8 gfx targets, all-quant flash
+  # The ROCm stages are fat HIP builds (5 gfx targets, all-quant flash
   # attention): on every push and scheduled rebuild, or a manual run with the
   # "rocm" checkbox.
   build-stages-rocm:
@@ -188,12 +221,28 @@ jobs:
           docker-images: true
           swap-storage: true
       - uses: docker/setup-buildx-action@v4
+        id: buildx
       - name: Log in to GHCR
         uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      # Persisted cache mounts, as in build-stages-vulkan (exl3 has none).
+      - name: Restore cache mounts
+        uses: actions/cache@v6
+        with:
+          path: cache-mounts
+          key: mounts-${{ matrix.target }}-${{ github.run_id }}
+          restore-keys: mounts-${{ matrix.target }}-
+      - name: Inject cache mounts into BuildKit
+        uses: reproducible-containers/buildkit-cache-dance@v3
+        with:
+          builder: ${{ steps.buildx.outputs.name }}
+          cache-map: |
+            {
+              "cache-mounts/ccache-rocm": {"target": "/ccache", "id": "ccache-rocm"}
+            }
       # Same 429 retry as in build-stages-vulkan.
       - name: Build ${{ matrix.target }} stage
         id: build
@@ -201,9 +250,11 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: .
-          target: ${{ matrix.target }}
+          target: ${{ matrix.target }}-out
           platforms: linux/amd64
-          push: false
+          push: true
+          provenance: false
+          tags: ${{ needs.prepare.outputs.image }}:stage-${{ matrix.target }}-${{ github.run_id }}
           build-args: ${{ needs.prepare.outputs.build_args }}
           cache-from: type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-${{ matrix.target }}
           cache-to: type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-${{ matrix.target }},mode=max
@@ -212,9 +263,11 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: .
-          target: ${{ matrix.target }}
+          target: ${{ matrix.target }}-out
           platforms: linux/amd64
-          push: false
+          push: true
+          provenance: false
+          tags: ${{ needs.prepare.outputs.image }}:stage-${{ matrix.target }}-${{ github.run_id }}
           build-args: ${{ needs.prepare.outputs.build_args }}
           cache-from: type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-${{ matrix.target }}
           cache-to: type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-${{ matrix.target }},mode=max
@@ -265,15 +318,16 @@ jobs:
           build-args: |
             WITH_ROCM=false
             ${{ needs.prepare.outputs.build_args }}
-          # GHA cache caps at 10 GB -- far too small here, so cache in the registry
-          cache-from: |
-            type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-llama-vulkan
-            type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-llama-rdna
-            type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-whisper-vulkan
-            type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-sd-vulkan
-            type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-audiocpp
-            type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-llama-swap-build
-            type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache
+          # The engines come prebuilt from the stage jobs (named contexts replace
+          # the builder stages); only the final stage's own layers are cached here.
+          build-contexts: |
+            llama-vulkan=docker-image://${{ needs.prepare.outputs.image }}:stage-llama-vulkan-${{ github.run_id }}
+            llama-rdna=docker-image://${{ needs.prepare.outputs.image }}:stage-llama-rdna-${{ github.run_id }}
+            whisper-vulkan=docker-image://${{ needs.prepare.outputs.image }}:stage-whisper-vulkan-${{ github.run_id }}
+            sd-vulkan=docker-image://${{ needs.prepare.outputs.image }}:stage-sd-vulkan-${{ github.run_id }}
+            audiocpp=docker-image://${{ needs.prepare.outputs.image }}:stage-audiocpp-${{ github.run_id }}
+            llama-swap-build=docker-image://${{ needs.prepare.outputs.image }}:stage-llama-swap-build-${{ github.run_id }}
+          cache-from: type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache
           cache-to: type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache,mode=max
       - name: Build and push (Vulkan only, retry)
         if: steps.build.outcome == 'failure'
@@ -287,14 +341,14 @@ jobs:
           build-args: |
             WITH_ROCM=false
             ${{ needs.prepare.outputs.build_args }}
-          cache-from: |
-            type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-llama-vulkan
-            type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-llama-rdna
-            type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-whisper-vulkan
-            type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-sd-vulkan
-            type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-audiocpp
-            type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-llama-swap-build
-            type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache
+          build-contexts: |
+            llama-vulkan=docker-image://${{ needs.prepare.outputs.image }}:stage-llama-vulkan-${{ github.run_id }}
+            llama-rdna=docker-image://${{ needs.prepare.outputs.image }}:stage-llama-rdna-${{ github.run_id }}
+            whisper-vulkan=docker-image://${{ needs.prepare.outputs.image }}:stage-whisper-vulkan-${{ github.run_id }}
+            sd-vulkan=docker-image://${{ needs.prepare.outputs.image }}:stage-sd-vulkan-${{ github.run_id }}
+            audiocpp=docker-image://${{ needs.prepare.outputs.image }}:stage-audiocpp-${{ github.run_id }}
+            llama-swap-build=docker-image://${{ needs.prepare.outputs.image }}:stage-llama-swap-build-${{ github.run_id }}
+          cache-from: type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache
           cache-to: type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache,mode=max
 
   # Full Vulkan+ROCm image -> :full and :latest (+ full-<sha> / full-<date> /
@@ -358,18 +412,18 @@ jobs:
           build-args: |
             WITH_ROCM=true
             ${{ needs.prepare.outputs.build_args }}
-          cache-from: |
-            type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-llama-vulkan
-            type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-llama-rdna
-            type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-whisper-vulkan
-            type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-sd-vulkan
-            type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-audiocpp
-            type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-llama-swap-build
-            type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-llama-rocm
-            type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-exl3
-            type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-whisper-rocm
-            type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-sd-rocm
-            type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-rocm
+          build-contexts: |
+            llama-vulkan=docker-image://${{ needs.prepare.outputs.image }}:stage-llama-vulkan-${{ github.run_id }}
+            llama-rdna=docker-image://${{ needs.prepare.outputs.image }}:stage-llama-rdna-${{ github.run_id }}
+            whisper-vulkan=docker-image://${{ needs.prepare.outputs.image }}:stage-whisper-vulkan-${{ github.run_id }}
+            sd-vulkan=docker-image://${{ needs.prepare.outputs.image }}:stage-sd-vulkan-${{ github.run_id }}
+            audiocpp=docker-image://${{ needs.prepare.outputs.image }}:stage-audiocpp-${{ github.run_id }}
+            llama-swap-build=docker-image://${{ needs.prepare.outputs.image }}:stage-llama-swap-build-${{ github.run_id }}
+            llama-rocm=docker-image://${{ needs.prepare.outputs.image }}:stage-llama-rocm-${{ github.run_id }}
+            exl3=docker-image://${{ needs.prepare.outputs.image }}:stage-exl3-${{ github.run_id }}
+            whisper-rocm=docker-image://${{ needs.prepare.outputs.image }}:stage-whisper-rocm-${{ github.run_id }}
+            sd-rocm=docker-image://${{ needs.prepare.outputs.image }}:stage-sd-rocm-${{ github.run_id }}
+          cache-from: type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-rocm
           cache-to: type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-rocm,mode=max
       - name: Build and push (Vulkan + ROCm, retry)
         if: steps.build.outcome == 'failure'
@@ -383,16 +437,16 @@ jobs:
           build-args: |
             WITH_ROCM=true
             ${{ needs.prepare.outputs.build_args }}
-          cache-from: |
-            type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-llama-vulkan
-            type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-llama-rdna
-            type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-whisper-vulkan
-            type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-sd-vulkan
-            type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-audiocpp
-            type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-llama-swap-build
-            type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-llama-rocm
-            type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-exl3
-            type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-whisper-rocm
-            type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-sd-rocm
-            type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-rocm
+          build-contexts: |
+            llama-vulkan=docker-image://${{ needs.prepare.outputs.image }}:stage-llama-vulkan-${{ github.run_id }}
+            llama-rdna=docker-image://${{ needs.prepare.outputs.image }}:stage-llama-rdna-${{ github.run_id }}
+            whisper-vulkan=docker-image://${{ needs.prepare.outputs.image }}:stage-whisper-vulkan-${{ github.run_id }}
+            sd-vulkan=docker-image://${{ needs.prepare.outputs.image }}:stage-sd-vulkan-${{ github.run_id }}
+            audiocpp=docker-image://${{ needs.prepare.outputs.image }}:stage-audiocpp-${{ github.run_id }}
+            llama-swap-build=docker-image://${{ needs.prepare.outputs.image }}:stage-llama-swap-build-${{ github.run_id }}
+            llama-rocm=docker-image://${{ needs.prepare.outputs.image }}:stage-llama-rocm-${{ github.run_id }}
+            exl3=docker-image://${{ needs.prepare.outputs.image }}:stage-exl3-${{ github.run_id }}
+            whisper-rocm=docker-image://${{ needs.prepare.outputs.image }}:stage-whisper-rocm-${{ github.run_id }}
+            sd-rocm=docker-image://${{ needs.prepare.outputs.image }}:stage-sd-rocm-${{ github.run_id }}
+          cache-from: type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-rocm
           cache-to: type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-rocm,mode=max

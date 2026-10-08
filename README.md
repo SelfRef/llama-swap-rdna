@@ -82,8 +82,8 @@ Build args:
   multiarch channel: release series in the package names (`amdrocm-runtime7.14`, ...); apt resolves the newest point release of the series
 - `ROCM_VERSION` — default `7.2.4`  
   classic channel: builder image tag and apt repo path
-- `AMDGPU_TARGETS` — default `gfx1030;gfx1100;gfx1101;gfx1102;gfx1150;gfx1151;gfx1200;gfx1201`  
-  gfx architectures compiled into the HIP binaries (RDNA2/3/3.5/4). CDNA (`gfx908;gfx90a;gfx942`) is not included by default — add it if you run Instinct cards. Trim to just your GPU for a much faster build.
+- `AMDGPU_TARGETS` — default `gfx1100;gfx1101;gfx1151;gfx1200;gfx1201`  
+  gfx architectures compiled into the HIP binaries: RX 7900, RX 7800/7700, Strix Halo and RDNA4. Everything else (RDNA2, RX 7600, Strix Point, CDNA) is one entry away — see the table in [Choosing ROCm vs Vulkan](#choosing-rocm-vs-vulkan). Trim to just your GPU for a much faster build.
 - `LLAMA_COMMIT` — default `master`  
   llama.cpp revision for both the Vulkan and the ROCm build (sha, tag, branch, or `refs/pull/N/head`).
 - `LLAMA_PATCHES` — default 2 PRs, see below  
@@ -247,20 +247,25 @@ Edit [config/config.yaml](config/config.yaml) to define your models — it shows
 
 ## Choosing ROCm vs Vulkan
 
-| GPU | Recommendation |
-|---|---|
-| Instinct MI100–MI350 (gfx908/90a/942) | ROCm — add the targets to `AMDGPU_TARGETS` and build yourself (not in the published image) |
-| RDNA3/3.5/4 — RX 7000/9000, Ryzen AI APUs (gfx11xx/12xx) | ROCm; Vulkan as fallback |
-| RDNA2 — RX 6000 (gfx1030 covered, rest via override) | either; Vulkan often less fuss |
-| RDNA1, Vega, older iGPUs | Vulkan |
+The Vulkan binaries run on any AMD GPU with a current RADV driver. The HIP (ROCm) binaries contain GPU code only for the architectures in `AMDGPU_TARGETS`: every target multiplies their compile time, so the published `:full` image builds just these five:
 
-The HIP binaries contain code for the `AMDGPU_TARGETS` listed above. A close-but-not-included consumer chip can often run with a spoofed architecture:
+| GPU | gfx | ROCm in the published `:full` | Vulkan |
+|---|---|---|---|
+| RX 7900 XTX / XT / GRE, W7900 / W7800 | gfx1100 | **yes** (also the only target of `exl3-server`) | yes |
+| RX 7800 XT / 7700 XT | gfx1101 | **yes** | yes |
+| Strix Halo — Ryzen AI Max (Radeon 8060S / 8050S) | gfx1151 | **yes** | yes |
+| RX 9070 XT / 9070 | gfx1201 | **yes** | yes |
+| RX 9060 XT | gfx1200 | **yes** | yes |
+| RX 7600 / 7600 XT | gfx1102 | no — add `gfx1102`, or try `HSA_OVERRIDE_GFX_VERSION=11.0.0` (runs the gfx1100 code) | yes |
+| Strix Point — Ryzen AI 300 (Radeon 890M / 880M) | gfx1150 | no — add `gfx1150` | yes |
+| RX 6800 / 6900 (RDNA2) | gfx1030 | no — add `gfx1030` | yes |
+| other RDNA2 (RX 6700 / 6600 …) | gfx1031–1036 | no — add `gfx1030` and run with `HSA_OVERRIDE_GFX_VERSION=10.3.0` | yes |
+| Instinct MI100–MI350 | gfx908 / 90a / 942 / 950 | no — add the target; AMD's own ROCm containers are the usual choice | — |
+| RDNA1, Vega, older iGPUs | — | no (outside current ROCm) | yes |
 
-| GPU | Env var |
-|---|---|
-| RX 7000 series (gfx1100/1101/1102) | usually none needed |
-| RX 6000 series below gfx1030 | `HSA_OVERRIDE_GFX_VERSION=10.3.0` |
-| Ryzen AI MAX / Strix Halo (gfx1151) | usually none needed |
+"Add" means building the image yourself with the target appended, e.g. `--build-arg AMDGPU_TARGETS="gfx1100;gfx1101;gfx1151;gfx1200;gfx1201;gfx1030"` (build args are listed under [Get the image](#get-the-image)); the `:full` runtime then also installs that target's ROCm math-library kernels. The override variables make the runtime treat an unlisted chip as a listed one and are not tested here.
+
+On a card that has both, prefer ROCm for dense models and compare: on the RX 7900 XTX the Vulkan build of the same llama.cpp commit is usually as fast or faster at decode, and the `*-rdna` binaries (ROCmFPx formats) are Vulkan-only.
 
 GPU selection on multi-GPU hosts: `HIP_VISIBLE_DEVICES=0` for `*-rocm` binaries, `GGML_VK_VISIBLE_DEVICES=0` for Vulkan ones.
 

@@ -140,14 +140,17 @@ ARG ROCM_SERIES=7.14
 # the Vulkan-only image as :vulkan and the full one as :full / :latest.
 ARG WITH_ROCM=true
 
-# gfx architectures compiled into the HIP binaries: RDNA2 (gfx1030), RDNA3/3.5
-# (gfx1100/01/02, gfx1150/51), RDNA4 (gfx1200/01) -- the consumer/APU cards this
-# image is for. The CDNA data-center targets of llama.cpp's official ROCm image
-# (gfx908;gfx90a;gfx942) are left out: they cost ~30% of an already long CI
-# build (all-quant FA kernels x every target) and Instinct users have AMD's own
-# containers; add them back here if needed. GPUs not listed can still use the
-# Vulkan binaries.
-ARG AMDGPU_TARGETS="gfx1030;gfx1100;gfx1101;gfx1102;gfx1150;gfx1151;gfx1200;gfx1201"
+# gfx architectures compiled into the HIP binaries: RX 7900 (gfx1100), RX 7800/
+# 7700 (gfx1101), Strix Halo (gfx1151) and RDNA4 RX 9070/9060 (gfx1201/gfx1200).
+# Every target multiplies the HIP compile time (all-quant FA kernels x every
+# target), so the list is kept to the RDNA3/3.5 cards this image is tuned on
+# plus current RDNA4.
+# Not compiled in, but each is one entry away (the table in the README's
+# "Choosing ROCm vs Vulkan"): RDNA2 gfx1030, RX 7600 gfx1102, Strix Point
+# gfx1150, and the CDNA data-center targets of llama.cpp's official ROCm image
+# (gfx908;gfx90a;gfx942).
+# GPUs not listed can still use the Vulkan binaries.
+ARG AMDGPU_TARGETS="gfx1100;gfx1101;gfx1151;gfx1200;gfx1201"
 
 # Compile flash-attention kernels for all K/V cache quant combinations in the
 # ROCm llama.cpp build (see header). Costs build time and binary size; set to
@@ -1235,6 +1238,37 @@ FROM exl3-none AS exl3-true-false
 FROM exl3-none AS exl3-false-true
 FROM exl3-none AS exl3-false-false
 FROM exl3-${WITH_ROCM}-${WITH_EXL3} AS exl3-sel
+
+# ── Stage outputs (CI handover) ────────────────────────────────────────
+# Exactly what the final stage copies out of each builder, nothing else. CI
+# builds these as `<stage>-out` in the parallel stage jobs, pushes them as small
+# images and hands them to the final build as named build contexts
+# (`--build-context llama-rocm=docker-image://...`), which REPLACE the builder
+# stage of that name: the final job then cannot recompile anything, whether or
+# not a cache matches. Relying on the stage jobs' registry caches alone did not
+# work — the final job missed them and rebuilt every engine itself.
+# A local `docker buildx build .` never touches these stages.
+FROM scratch AS llama-vulkan-out
+COPY --from=llama-vulkan /install/ /install/
+FROM scratch AS llama-rdna-out
+COPY --from=llama-rdna /install/ /install/
+FROM scratch AS whisper-vulkan-out
+COPY --from=whisper-vulkan /install/ /install/
+FROM scratch AS sd-vulkan-out
+COPY --from=sd-vulkan /install/ /install/
+FROM scratch AS audiocpp-out
+COPY --from=audiocpp /install/ /install/
+FROM scratch AS llama-swap-build-out
+COPY --from=llama-swap-build /install/ /install/
+FROM scratch AS llama-rocm-out
+COPY --from=llama-rocm /install/ /install/
+FROM scratch AS whisper-rocm-out
+COPY --from=whisper-rocm /install/ /install/
+FROM scratch AS sd-rocm-out
+COPY --from=sd-rocm /install/ /install/
+FROM scratch AS exl3-out
+COPY --from=exl3 /opt/exl3/ /opt/exl3/
+COPY --from=exl3 /install/ /install/
 
 # ══════════════════════════════════════════════════════════════════════
 # ── Final image: Ubuntu 24.04 runtime (+ ROCm) + everything built above ──
