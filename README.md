@@ -6,9 +6,8 @@ The [llama-swap](https://github.com/mostlygeek/llama-swap) `unified-vulkan` imag
 - **llama.cpp from current master plus open upstream PRs** (`LLAMA_PATCHES` plus rebased patches: Qwen 3.5-family delta-net fix, exact checkpoint restore for hybrid models, Vulkan MMVQ for speculative decoding on AMD, MTP carrier reset — see [Upstream PRs in the llama.cpp build](#upstream-prs-in-the-llamacpp-build)), the **same tree for the Vulkan and the ROCm build**. There is no un-patched llama.cpp in the image: `llama-server` is the patched build.
 - **Vulkan** (Mesa RADV) — works on practically any AMD GPU, including RDNA1/2, iGPUs/APUs and anything ROCm doesn't cover. Built with a modern shader compiler (see [Why build the Vulkan binaries ourselves](#why-build-the-vulkan-binaries-ourselves)) and shipped with a **current Mesa/RADV** instead of Ubuntu 24.04's.
 - **ROCm 7.14** (HIP) — the full ROCm userspace runtime (HIP, rocBLAS/hipBLAS, hipBLASLt, `rocminfo`) plus HIP builds of the engines, with flash-attention kernels for every KV-cache quant. ROCm comes from AMD's per-gfx `packages-multi-arch` repository (`ROCM_CHANNEL=multiarch`), so the image carries BLAS kernels only for the gfx targets it is built for instead of ~6 GB of all-arch Tensile blobs; the classic `repo.radeon.com` channel (tops out at ROCm 7.2.4, which still has the HIP-graphs bug fixed in 7.13) remains available as `ROCM_CHANNEL=classic`.
-- **EngramHalo.cpp** (HIP, `:full` tag, gfx1151 only) — [Aristo94's llama.cpp fork](https://github.com/Aristo94/EngramHalo.cpp) tuned for Qwen 3.8 Flash-Next on Strix Halo, as a third `llama.cpp` install (`*-engram` binaries). See [EngramHalo.cpp for Strix Halo](#engramhalocpp-for-strix-halo).
-- **The ROCmFPx fork** (Vulkan, all tags) — [LaurentZuijdwijk's llama.cpp fork](https://github.com/LaurentZuijdwijk/llama.cpp) as a fourth `llama.cpp` install (`*-fpx` binaries): the **ROCmFP4/ROCmFPx weight formats** that stock llama.cpp cannot even load, kernels tuned for the batch widths speculative decoding verifies at, and adaptive draft sizing. Measured **+26-35% decode** on a 7900 XTX for Qwen3.8-27B. See [The ROCmFPx fork](#the-rocmfpx-fork).
-- **llama.cpp-rdna** (Vulkan, all tags) — [SelfRef/llama.cpp-rdna](https://github.com/SelfRef/llama.cpp-rdna) as a fifth `llama.cpp` install (`*-rdna` binaries): current upstream master **and** the ROCmFPx formats in one tree, plus measured RDNA3/RDNA3.5 Vulkan patches that were never upstreamed. See [The RDNA3 fork](#the-rdna-fork).
+- **llama.cpp-rdna** (Vulkan, all tags) — [SelfRef/llama.cpp-rdna](https://github.com/SelfRef/llama.cpp-rdna) as a third `llama.cpp` install (`*-rdna` binaries): current upstream master **and** the ROCmFPx formats in one tree, plus measured RDNA3/RDNA3.5 Vulkan patches that were never upstreamed. See [The RDNA3 fork](#the-rdna-fork).
+- **exllamav3 for RDNA3** (HIP, `:full` tag, gfx1100 only) — [phoenixhaxor/exllamav3-rocm](https://github.com/phoenixhaxor/exllamav3-rocm) with [TabbyAPI](https://github.com/theroyallab/tabbyAPI) as `exl3-server`: EXL3 quants with DFlash2 or MTP speculative decoding. Not a llama.cpp. See [exllamav3 for RDNA3](#exllamav3-for-rdna3).
 
 Both llama.cpp backends are built with runtime CPU dispatch (`GGML_CPU_ALL_VARIANTS`), so one image gets AVX2 on Zen 3 and AVX-512/VNNI/BF16 on Zen 4/5 for CPU-offloaded layers. Every engine is built once per backend from one resolved commit, so each ships as a matched Vulkan/ROCm pair — pick the backend per model in your llama-swap config.
 
@@ -18,16 +17,15 @@ Both llama.cpp backends are built with runtime CPU dispatch (`GGML_CPU_ALL_VARIA
 |---|---|---|
 | [llama-swap](https://github.com/mostlygeek/llama-swap) `main` + PRs (`LLAMA_SWAP_PATCHES`) | `llama-swap` (UI embedded), `vllm-wrapper` | (backend-independent) |
 | [llama.cpp](https://github.com/ggml-org/llama.cpp) master + PRs (`LLAMA_PATCHES`) | `llama-server`, `llama-cli`, `llama-tts`, `llama-bench` | `llama-server-rocm`, `llama-cli-rocm`, `llama-tts-rocm`, `llama-bench-rocm` |
-| [EngramHalo.cpp](https://github.com/Aristo94/EngramHalo.cpp) (llama.cpp fork, Strix Halo/qwen4exp) | — (fork is ROCm/HIP-only) | `llama-server-engram`, `llama-cli-engram`, `llama-bench-engram` (gfx1151 only) |
-| [ROCmFPx fork](https://github.com/LaurentZuijdwijk/llama.cpp) (llama.cpp fork, ROCmFP4/FPx weight types) | `llama-server-fpx`, `llama-cli-fpx`, `llama-bench-fpx`, `llama-quantize-fpx`, `llama-perplexity-fpx` | — (fork has no HIP kernels for these types) |
 | [llama.cpp-rdna](https://github.com/SelfRef/llama.cpp-rdna) (llama.cpp fork: upstream master + ROCmFPx + RDNA3 patches) | `llama-server-rdna`, `llama-cli-rdna`, `llama-bench-rdna`, `llama-quantize-rdna`, `llama-perplexity-rdna` | — (Vulkan-only) |
+| [exllamav3-rocm](https://github.com/phoenixhaxor/exllamav3-rocm) + [TabbyAPI](https://github.com/theroyallab/tabbyAPI) (PyTorch venv, `/opt/exl3`) | — (HIP-only) | `exl3-server` (gfx1100 only) |
 | [whisper.cpp](https://github.com/ggml-org/whisper.cpp) master | `whisper-server`, `whisper-cli` | `whisper-server-rocm`, `whisper-cli-rocm` |
 | [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp) master | `sd-server` (web UI embedded), `sd-cli` | `sd-server-rocm` (web UI embedded), `sd-cli-rocm` |
 | [audio.cpp](https://github.com/0xShug0/audio.cpp) main | `audiocpp_server`, `audiocpp_cli`, `audiocpp_gguf` (GGUF converter, upstream ships none) | — (no HIP backend upstream) |
-| `benchmark` (this repo, `scripts/benchmark`) | one CLI for server-level / `llama-bench` / standalone-variant benchmarks of the config's text entries, see [Benchmarking](#benchmarking) | (uses the `*-rocm` / `*-engram` / `*-fpx` / `*-rdna` binaries via `--variant`) |
+| `benchmark` (this repo, `scripts/benchmark`) | one CLI for server-level / `llama-bench` / standalone-variant benchmarks of the config's text entries, see [Benchmarking](#benchmarking) | (uses the `*-rocm` / `*-rdna` binaries via `--variant`) |
 | `rerank-bench` (this repo, `scripts/rerank-bench`) | retrieval quality (nDCG@10) of the config's reranker entries over a cached embedding stage, see [Reranker quality](#reranker-quality-rerank-bench) | — |
 
-llama.cpp lives in self-contained directories `/opt/llama-vulkan`, `/opt/llama-rocm`, `/opt/llama-engram`, `/opt/llama-fpx` and `/opt/llama-rdna` (binaries, `libllama`/`libggml*` and the per-CPU-level `libggml-cpu-*.so` variants, RPATH `$ORIGIN`) with symlinks in `/usr/local/bin`; whisper/sd/audio.cpp binaries are static. Exact versions of everything — every commit, every merged PR, the glslc used and the enabled build options — are recorded in `/versions.txt` inside the image.
+llama.cpp lives in self-contained directories `/opt/llama-vulkan`, `/opt/llama-rocm` and `/opt/llama-rdna` (binaries, `libllama`/`libggml*` and the per-CPU-level `libggml-cpu-*.so` variants, RPATH `$ORIGIN`) with symlinks in `/usr/local/bin`; whisper/sd/audio.cpp binaries are static. Exact versions of everything — every commit, every merged PR, the glslc used and the enabled build options — are recorded in `/versions.txt` inside the image.
 
 ## Runtime layout
 
@@ -60,7 +58,7 @@ docker pull ghcr.io/selfref/llama-swap-rdna:full     # Vulkan + ROCm
 docker pull ghcr.io/selfref/llama-swap-rdna:latest   # alias for :full
 ```
 
-Both tags are rebuilt on every push and every 3 days by the scheduled run, each time from the then-current default branches of llama-swap, llama.cpp, whisper.cpp, stable-diffusion.cpp, audio.cpp, EngramHalo.cpp, the ROCmFPx fork and llama.cpp-rdna and the current heads of the merged PRs. The ROCm stages are fat multi-gfx HIP builds that take hours of runner time, so on a PR or an ad-hoc run they only happen if you ask for them (Actions → Build image → Run workflow → tick **rocm**). The `*-rocm` binaries, the `*-engram` binaries (see [EngramHalo.cpp for Strix Halo](#engramhalocpp-for-strix-halo)), the ROCm runtime and `rocminfo` exist only in `:full`/`:latest`.
+Both tags are rebuilt on every push and every 3 days by the scheduled run, each time from the then-current default branches of llama-swap, llama.cpp, whisper.cpp, stable-diffusion.cpp, audio.cpp, llama.cpp-rdna and exllamav3-rocm and the current heads of the merged PRs. The ROCm stages are fat multi-gfx HIP builds that take hours of runner time, so on a PR or an ad-hoc run they only happen if you ask for them (Actions → Build image → Run workflow → tick **rocm**). The `*-rocm` binaries, `exl3-server` (see [exllamav3 for RDNA3](#exllamav3-for-rdna3)), the ROCm runtime and `rocminfo` exist only in `:full`/`:latest`.
 
 Or build locally (expect a couple of hours for the fat HIP builds; `WITH_ROCM=false` for the Vulkan-only image in well under an hour):
 
@@ -96,20 +94,14 @@ Build args:
   Ubuntu release whose `glslc`/`libshaderc1` are used by the Vulkan builder (only those two packages; everything else stays 24.04)
 - `LLAMA_FA_ALL_QUANTS` — default `ON`  
   ROCm llama.cpp: compile flash-attention kernels for all K/V cache quant combinations (without it only q8_0/q8_0 and q4_0/q4_0 stay on the GPU, see llama.cpp #27761). Set `OFF` for a faster build.
-- `WITH_ENGRAM` — default `true`  
-  Build [EngramHalo.cpp](https://github.com/Aristo94/EngramHalo.cpp) as `*-engram` binaries. Only takes effect together with `WITH_ROCM=true` (the fork is HIP-only), so `:vulkan` never contains it. `false` skips the stage.
-- `ENGRAM_REPO` / `ENGRAM_BRANCH` / `ENGRAM_COMMIT` — default Aristo94's repo, `strix-halo-qwen4exp`, *(empty)*  
-  Fork source. The branch rebases onto llama.cpp master and carries the Strix Halo patch series; `ENGRAM_COMMIT` pins it to a sha (CI does), empty = branch tip.
-- `ENGRAM_TARGETS` — default `gfx1151`  
-  gfx targets for the EngramHalo build. gfx1151 alone on purpose: the fork's kernels are tuned for and only validated on Strix Halo.
-- `WITH_FPX` — default `true`  
-  Build the [ROCmFPx fork](https://github.com/LaurentZuijdwijk/llama.cpp) as `*-fpx` binaries. Vulkan-only, so it is in **both** tags and is independent of `WITH_ROCM`. `false` skips the stage.
-- `FPX_REPO` / `FPX_BRANCH` / `FPX_COMMIT` — default LaurentZuijdwijk's repo, `master`, *(empty)*  
-  Fork source. The branch merges llama.cpp master periodically (so it lags upstream by a few weeks); `FPX_COMMIT` pins it to a sha (CI does), empty = branch tip.
 - `WITH_RDNA` — default `true`  
   Build [llama.cpp-rdna](https://github.com/SelfRef/llama.cpp-rdna) as `*-rdna` binaries. Vulkan-only, in both tags, independent of `WITH_ROCM`. `false` skips the stage.
 - `RDNA_REPO` / `RDNA_BRANCH` / `RDNA_COMMIT` — default SelfRef's repo, `rdna`, *(empty)*  
-  Fork source. **Always pin `RDNA_COMMIT` to a full 40-character sha** (`scripts/resolve-refs.sh` does): the clone's cache key is the arg values, so passing only the branch silently reuses the binary from whatever the branch pointed at last time, and GitHub rejects an abbreviated sha. The same trap applies to `FPX_BRANCH` and `ENGRAM_BRANCH`.
+  Fork source. **Always pin `RDNA_COMMIT` to a full 40-character sha** (`scripts/resolve-refs.sh` does): the clone's cache key is the arg values, so passing only the branch silently reuses the binary from whatever the branch pointed at last time, and GitHub rejects an abbreviated sha.
+- `WITH_EXL3` — default `true`  
+  Build [exllamav3-rocm](https://github.com/phoenixhaxor/exllamav3-rocm) + TabbyAPI as `exl3-server`. Only takes effect together with `WITH_ROCM=true`: it is a HIP engine and adds ~8 GB of PyTorch, so `:vulkan` never contains it. `false` skips the stage.
+- `EXL3_REPO` / `EXL3_BRANCH` / `EXL3_COMMIT` — default phoenixhaxor's repo, `main`, *(empty)*  
+  Fork source; pin `EXL3_COMMIT` to a full sha like the other forks (`scripts/resolve-refs.sh` does). The TabbyAPI revision is the one the fork's own installer pins.
 - `MESA_PPA` — default `ppa:kisak/kisak-mesa`  
   Newer Mesa/RADV for the final image; `""` keeps Ubuntu 24.04's stock Mesa 25.2
 - `QWEN_TEMPLATE_URL` — default froggeric's `chat_template.jinja`  
@@ -140,43 +132,69 @@ cmd: >
     --jinja --chat-template-file /etc/llama-swap/templates/qwen-fixed.jinja
 ```
 
-## EngramHalo.cpp for Strix Halo
+## exllamav3 for RDNA3
 
-The `:full` tag ships [EngramHalo.cpp](https://github.com/Aristo94/EngramHalo.cpp) (branch `strix-halo-qwen4exp`) as `llama-server-engram` / `llama-cli-engram` / `llama-bench-engram` — a llama.cpp fork tuned for **Qwen 3.8 Flash-Next on Strix Halo** (Ryzen AI MAX+ 395 / Radeon 8060S, gfx1151): QSA sparse-gather attention, a HIP wide top-k kernel, a chunked GATED_DELTA_NET prefill kernel, an MTP draft head for speculative decoding, and the model's 26.8 GiB engram/PLE table SSD-backed via `--lazy-mode on` (~1 GiB resident; the flag was `--tensor-read-lazy` before the fork rebased onto upstream #27794). The fork's in-tree patches (`docs/strix-halo/`) are applied at build time; the [#25992](https://github.com/ggml-org/llama.cpp/issues/25992) iGPU host-buffer workaround is treated as required (the build fails if it stops applying), the per-buffer mmap loader patch is skipped once obsolete.
+The `:full` tag ships [phoenixhaxor/exllamav3-rocm](https://github.com/phoenixhaxor/exllamav3-rocm) — [exllamav3](https://github.com/turboderp-org/exllamav3) with its EXL3 matmul, decode/verify attention and Gated DeltaNet kernels rewritten for RDNA3 (wave32, WMMA) — served by the fork's pinned, patched [TabbyAPI](https://github.com/theroyallab/tabbyAPI): OpenAI-compatible API with streaming, tool calls, images and reasoning, plus **DFlash2** (block-diffusion draft model) or **MTP** speculative decoding. It is a PyTorch (ROCm 7.2 wheels) venv under `/opt/exl3`, launched as `exl3-server`; PyTorch brings its own HIP libraries, and the image keeps only their gfx1100 kernels. Triton JIT-compiles parts of prefill at runtime, which is why `:full` also carries `gcc` and the Python headers.
 
-Measured on a 128 GB Strix Halo box (Qwen3.8-Flash-Next UD-Q4_K_XL, q8_0 KV, `--n-cpu-moe 24`, vs this image's `llama-server-rocm` before the qwen4exp PRs were merged into it): prompt processing 249 → 341–385 t/s at 11K, decode 11.3 → 15.5 t/s at 11K, and with the MTP sidecar 22–31 t/s on code at temp 0. Useful runtime env on gfx1151: `ROCBLAS_USE_HIPBLASLT=1`, `GGML_HIP_GDN_CHUNK=1`, `LLAMA_MMAP_DROP_BEHIND=1` (keeps the page cache warm behind a model-swapping proxy), and `LLAMA_QSA_GATHER=<n_kv threshold>` to tune when the sparse gather kicks in (default 16384). The MTP sidecar GGUF (draft weights, ~4 GB Q8_0) is at [EasiiX/Qwen3.8-Flash-Next-MTP-Strix-Halo-GGUF](https://huggingface.co/EasiiX/Qwen3.8-Flash-Next-MTP-Strix-Halo-GGUF); pass it with `-md` plus `--spec-type draft-mtp --spec-draft-n-max 4 --spec-draft-p-min 0.75` (n-max/p-min are the fork defaults and won a local parameter sweep; tune speculative params at temperature 0, acceptance noise at higher temperatures misleads). Do **not** stack `ngram-mod` on top of the MTP draft for this model: measured 2026-09-07, the ngram drafts displace the MTP drafts and are rejected (refactor-style code edits 25 → 36.5 t/s without it, json 27 → 31, 39K-depth decode 20 → 27). With the qwen4exp MTP/QSA PRs merged into mainline (`#28243`, `#28213`), `llama-server-rocm` + unsloth's official `MTP/*.gguf` sidecar now measures ~5% faster still at 5.5 GiB less GTT — the fork's remaining advantage is vision together with MTP. MTP is validated up to a 164K slot — cap `--ctx-size 163840` when using `-md`, or drop MTP for the full 262144.
+**gfx1100 (RX 7900 XTX / 7900 XT / W7900) only.** On anything else use the llama.cpp builds.
 
-The binaries contain gfx1151 code only (`ENGRAM_TARGETS`) and exist only in the `:full`/`:latest` tag; on any other GPU, or for any other model, use `llama-server` / `llama-server-rocm` (upstream master has qwen4exp MTP itself since #29761, merged 2026-10-01). The built fork commit is recorded in `/versions.txt` as `llama_engram_commit:`.
+Every TabbyAPI config key is also a flag (`exl3-server --help`), so a llama-swap entry needs no config file. The image's Qwen templates are available as `--prompt-template qwen-fixed` / `qwen-sharp`. Example for Qwen3.8-27B ([EXL3 3.5 bpw](https://huggingface.co/Mia-AiLab/Qwen3.8-27B-EXL3-3.5bpw) + [DFlash2 draft](https://huggingface.co/Mia-AiLab/Qwen3.8-27B-DFlash2-EXL3-5.0bpw), both downloaded into one directory):
 
-## The ROCmFPx fork
+```yaml
+qwen38-exl3:
+  env: ["HIP_VISIBLE_DEVICES=0"]   # the gfx1100 card; ROCm indices can differ from Vulkan ones, check rocminfo
+  checkEndpoint: /health
+  cmd: >
+    exl3-server --host 127.0.0.1 --port ${PORT} --disable-auth true
+      --model-dir /models/exl3 --model-name Qwen3.8-27B-EXL3-3.5bpw
+      --max-seq-len 196608 --cache-size 196608 --cache-mode Q8
+      --chunk-size 2048 --max-batch-size 1
+      --vision true --vision-offload true
+      --reasoning true --reasoning-start-token "<think>" --reasoning-end-token "</think>"
+      --tool-format qwen3_coder --prompt-template qwen-fixed
+      --draft-mode model --draft-model-dir /models/exl3
+      --draft-model-name Qwen3.8-27B-DFlash2-EXL3-5.0bpw --draft-cache-mode Q4
+      --sysmem-recurrent-cache 4096
+```
 
-Both tags ship [LaurentZuijdwijk's llama.cpp fork](https://github.com/LaurentZuijdwijk/llama.cpp) as `llama-server-fpx` / `llama-cli-fpx` / `llama-bench-fpx` / `llama-quantize-fpx` / `llama-perplexity-fpx`. Unlike every other engine here it cannot be replaced by upstream plus a few PRs, because it adds **new GGUF tensor types**:
+That is the fork's `config.dflash2-192k.yml` as flags (~23.6 GB VRAM). For the full 262,144 context use `--draft-mode mtp --draft-cache-mode Q8` (the MTP head is inside the main model) and drop the draft model flags. The container needs `/dev/kfd` as well as the render node.
+
+Measured on an RX 7900 XTX against this image's best llama.cpp path for the same model (`llama-server-rdna`, ROCmFP4-FAST + MTP n4), same chat template (`qwen-sharp`), greedy, single stream, client-side timing (t/s, exl3 vs llama.cpp):
+
+| | DFlash2, 192k | MTP, 256k | llama.cpp |
+|---|---|---|---|
+| prose decode | **77.5** | 66.7 | 67.7 |
+| JSON decode | **174.8** | 127.1 | 117.5 |
+| code-edit decode | **221.7** | 140.2 | 132.7 |
+| reasoning decode | **153.3** | 110.1 | 110.0 |
+| decode after an 8k prompt | 79.0 | 69.9 | **80.0** |
+| prefill 8k / 30k | 1233 / 1147 | **1243 / 1166** | 947 / 845 |
+
+DFlash2 is the mode to use; MTP only buys the longer context. Both use ~24 GB of the card. The built commits are recorded in `/versions.txt` as `exl3_commit:` / `exl3_tabbyapi_commit:`.
+
+## The RDNA fork
+
+Both tags ship [SelfRef/llama.cpp-rdna](https://github.com/SelfRef/llama.cpp-rdna) (branch `rdna`) as `llama-server-rdna` / `llama-cli-rdna` / `llama-bench-rdna` / `llama-quantize-rdna` / `llama-perplexity-rdna`. Unlike `llama-server` it cannot be replaced by upstream plus a few PRs, because it adds **new GGUF tensor types**. Its base is [LaurentZuijdwijk's ROCmFPx fork](https://github.com/LaurentZuijdwijk/llama.cpp) (shipped here as `*-fpx` until 2026-10-07), which brings:
 
 - **ROCmFPx weight formats** — `Q4_0_ROCMFP4` and its `_FAST` / `_LEAN` / `_COHERENT` / `_STRIX` / `_STRIX_LEAN` recipes plus `Q2/Q3/Q6/Q8_0_ROCMFPX` (ggml type ids 100–107), hand-ported from [ciru-ai/ROCmFPX](https://github.com/ciru-ai/ROCmFPX) ← [charlie12345/ROCmFPX](https://github.com/charlie12345/ROCmFPX), where the format originates. A 4-bit codebook with UE4M3 block scales at 4.25–4.6 bpw. Stock `llama-server` **cannot load these files at all** (`Q4_0_ROCMFP4_FAST` is GGUF file type 103), which is the whole reason this build exists. It is a *software* codebook, not hardware FP4 — no RDNA GPU has FP4 matrix instructions.
 - **Kernels for the batch widths speculation runs at** — whole-block MMVQ for the FP4 types, branch-free fp6/fp3 dequant, an IQ3_S register-spill fix at `NUM_COLS > 4`. Verifying an MTP draft is a batch-3..8 matmul, and the stock shaders are mistuned exactly there.
 - **Adaptive draft sizing** — `--spec-draft-adaptive` with `--spec-draft-n-min`: the draft length follows the measured acceptance rate instead of a fixed `--spec-draft-n-max`.
 - **Vulkan prefill tuning that pays on stock K-quants too** — an LDS bank-conflict fix in the coopmat matmul tile stride (driver-gated to RADV ≥ 25.3), an f16 B operand for quantized matmul/matmul_id, a tiled concat-transpose for the delta-net conv state.
 
+On top of that base the branch has **upstream master merged in** (re-ported 2026-09-18, kept current since) — the ROCmFPx fork itself last merged upstream on 2026-08-30 and cannot take `LLAMA_PATCHES` — plus a short list of RDNA3/RDNA3.5 Vulkan patches that circulate between community forks without an upstream PR: coopmat1 flash-attention work and on-device speculative checkpoints, each carried only after a benchmark showed it paying.
+
 Measured here on an **RX 7900 XTX** (gfx1100, RADV/Mesa 26.2.2, 2026-09-09), Qwen3.8-27B with its baked MTP head, greedy decode t/s on prose / structured JSON / a copy-heavy refactor:
 
 | build + weights | decode | prefill | VRAM | wikitext PPL |
 |---|---|---|---|---|
 | `llama-server`, unsloth UD-Q4_K_XL (16.35 GiB), `--spec-draft-n-max 3` | 60.9 / 83.6 / 94.7 | 423 / 328 / 777 | 22.3 G | 6.637 |
-| `llama-server-fpx`, [julianmb ROCmFP4-FAST](https://huggingface.co/julianmb/Qwen-3.8-27B-ROCmFP4-FAST-GGUF) (13.55 GiB), `--spec-draft-n-max 4` | **76.7 / 105.5 / 128.0** | 457 / 343 / 921 | **19.0 G** | 6.921 |
+| ROCmFPx fork (the former `llama-server-fpx`), [julianmb ROCmFP4-FAST](https://huggingface.co/julianmb/Qwen-3.8-27B-ROCmFP4-FAST-GGUF) (13.55 GiB), `--spec-draft-n-max 4` | **76.7 / 105.5 / 128.0** | 457 / 343 / 921 | **19.0 G** | 6.921 |
 
 So **+26 / +26 / +35 % decode and −3.3 GiB** for **+4.3 % perplexity** — the FP4 file is the lossiest ROCmFP4 recipe (single scale per 32 weights); `Q4_0_ROCMFP4_STRIX_LEAN` trades ~0.1 GiB for less of that loss. On the *same* K-quant file the fork's engine work alone is +5–7 % prefill and neutral decode, so most of the win is the weight format, and both parts are needed. Draft depth matters more than usual: `n-max 4` beat 3 by +9/+11/+15 % and 5–6 by ~11 % on prose (acceptance falls from 47 % to 34 %); `--spec-draft-adaptive` only won on the 100 %-acceptance copy task.
 
-`llama-quantize-fpx` produces these files from a BF16/F16 source (`llama-quantize-fpx in.gguf out.gguf Q4_0_ROCMFP4_STRIX_LEAN`), and `llama-perplexity-fpx` scores them — no other binary in the image knows the types. The build fails if a later upstream merge in the fork drops either the ROCmFPx types or adaptive drafting, so the `-fpx` name never silently becomes a plain llama.cpp. The fork commit and the type list it built are in `/versions.txt` as `llama_fpx_commit:` / `llama_fpx_types:`.
+`llama-quantize-rdna` produces these files from a BF16/F16 source (`llama-quantize-rdna in.gguf out.gguf Q4_0_ROCMFP4_STRIX_LEAN`), and `llama-perplexity-rdna` scores them — no other binary in the image knows the types.
 
-Because the fork tracks upstream by merging master every few weeks, it lags the `llama-server` build: keep it for models where an FPx file or adaptive drafting actually wins, and leave everything else on `llama-server`.
-
-## The RDNA fork
-
-Both tags also ship [SelfRef/llama.cpp-rdna](https://github.com/SelfRef/llama.cpp-rdna) (branch `rdna`) as `llama-server-rdna` / `llama-cli-rdna` / `llama-bench-rdna` / `llama-quantize-rdna` / `llama-perplexity-rdna`. It exists because the ROCmFPx fork above lags upstream by weeks and cannot take `LLAMA_PATCHES`, so FP4 weights and current llama.cpp were never in one binary. This fork is the ROCmFPx base with **upstream master merged in** (re-ported 2026-09-18, kept current since), plus a short list of RDNA3/RDNA3.5 Vulkan patches that circulate between community forks without an upstream PR — coopmat1 flash-attention work and on-device speculative checkpoints, each carried only after a benchmark showed it paying.
-
-Targets are gfx1100 (RX 7900 XTX), gfx1101 (RX 7800 XT) and gfx1151 (Strix Halo); it is Vulkan-only. The same build canaries as the `-fpx` stage apply (the build fails if the ROCmFPx types or adaptive drafting disappear), and the built commit is in `/versions.txt` as `llama_rdna_commit:` / `llama_rdna_types:`. What the branch carries, what was tried and dropped, and the measurements are in the fork's own README.
-
-Prefer `llama-server-rdna` over `llama-server-fpx` for ROCmFPx models: same formats, current upstream underneath.
+Targets are gfx1100 (RX 7900 XTX), gfx1101 (RX 7800 XT) and gfx1151 (Strix Halo); it is Vulkan-only. The build fails if a merge ever drops the ROCmFPx types or adaptive drafting, so the `-rdna` name never silently becomes a plain llama.cpp; the built commit and type list are in `/versions.txt` as `llama_rdna_commit:` / `llama_rdna_types:`. What the branch carries, what was tried and dropped, and the measurements are in the fork's own README.
 
 ## Upstream PRs in the llama.cpp build
 
@@ -301,7 +319,6 @@ docker compose exec llama-swap benchmark --prompt text my-model   # all text pre
 docker compose exec llama-swap benchmark --prompt prose,prefill --prefill-tokens 65536 my-model
 docker compose exec llama-swap benchmark --kernel --std --unload my-model    # llama-bench, community-comparable line
 docker compose exec llama-swap benchmark --standalone --variant rocm --unload my-model # this entry on the ROCm build
-docker compose exec llama-swap benchmark --standalone --variant engram --unload my-model  # ... on EngramHalo (:full)
 docker compose exec llama-swap benchmark --ppl --unload <model> <other-quant>   # perplexity over wikitext-2
 docker compose exec llama-swap benchmark --ppl --kld-base ref.dat --unload <model>   # KL-divergence vs a reference
 docker compose exec llama-swap benchmark --prompt vision --vision-answers my-vlm other-vlm   # vision: accuracy + speed
@@ -317,7 +334,7 @@ docker compose exec llama-swap benchmark --list                  # parsed entrie
 
 **A model name is required** since 2026-09-12 — pass `--all` for every listed text entry. The full sweep is every preset x every entry, and on a multi-GPU box the `vram` entries swap one at a time, so it is a ~20 GB load per entry plus a 32k-prompt pass (`prefill`, `depth`): hours of work that used to start by typing `benchmark` with no arguments. Model names may be entry keys or their aliases / `:l:m:x` tiers.
 
-Variants are `vulkan` (plain `llama-server`), `rocm`, `engram`, `fpx` and `rdna`. Presets (`--prompt`, **default group `fast`** = prose, json, tools, the ~1 min smoke test; `text` = all of them): `prose` (free text, speculative worst case), `json` (structured
+Variants are `vulkan` (plain `llama-server`), `rocm` and `rdna`. Presets (`--prompt`, **default group `fast`** = prose, json, tools, the ~1 min smoke test; `text` = all of them): `prose` (free text, speculative worst case), `json` (structured
 output, best case), `refactor` (copy-heavy code edit, ~2k-token module), `agent` (tool-calling
 transcript, 6 tools, ~2.5k prompt tokens; column `call`), `tools` (single tool call, natural stop;
 `call`/`finish`), `reasoning` (`enable_thinking` on; `think`), `prefill` (pure big-context prefill,
@@ -366,7 +383,7 @@ to llama-bench's default. `gtt` growth above `--spill-threshold` (default 1.5 Gi
 VRAM-resident entry flags `SPILL`; on UMA GPUs (Strix Halo) the check is off. The `hash` is the
 sha256 of the first measured output and is reproducible for the same request sequence across
 loads and builds. Needs `LLAMA_SWAP_API_KEY` in the environment when llama-swap has `apiKeys`.
-`-rocm`/`-engram` variants exist only in the `:full`/`:latest` tag; `-fpx` is in both tags.
+The `-rocm` variant exists only in the `:full`/`:latest` tag; `-rdna` is in both tags.
 
 ### Reranker quality (`rerank-bench`)
 
@@ -440,5 +457,4 @@ Serving notes the tool surfaces:
 - [llama-swap unified container docs](https://github.com/mostlygeek/llama-swap/tree/main/docker/unified) (the image this one mirrors in layout)
 - [llama.cpp ROCm Dockerfile](https://github.com/ggml-org/llama.cpp/blob/master/.devops/rocm.Dockerfile) (ROCm version + gfx target list followed here)
 - [whisper.cpp ROCm build docs](https://github.com/ggml-org/whisper.cpp#amd-rocm-gpu-support)
-- [EngramHalo.cpp Strix Halo docs](https://github.com/Aristo94/EngramHalo.cpp/blob/strix-halo-qwen4exp/docs/strix-halo/README.md) (fork background, benchmarks, MTP sidecar)
 - [ROCm apt installation](https://rocm.docs.amd.com/projects/install-on-linux/en/latest/install/install-methods/package-manager-index.html)

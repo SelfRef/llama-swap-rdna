@@ -19,9 +19,8 @@ on:
       - .github/workflows/build.yml
   schedule:
     # Rebuild every 3 days from the current default branches of llama-swap,
-    # llama.cpp (+ the ROCmFPx fork and llama.cpp-rdna), whisper.cpp,
-    # stable-diffusion.cpp,
-    # audio.cpp and EngramHalo,
+    # llama.cpp (+ llama.cpp-rdna), whisper.cpp, stable-diffusion.cpp,
+    # audio.cpp and exllamav3-rocm,
     # with the current heads of the merged PRs. Scheduled runs publish both
     # images.
     - cron: "0 4 */3 * *"
@@ -119,7 +118,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [llama-vulkan, llama-fpx, llama-rdna, whisper-vulkan, sd-vulkan, audiocpp, llama-swap-build]
+        target: [llama-vulkan, llama-rdna, whisper-vulkan, sd-vulkan, audiocpp, llama-swap-build]
     steps:
       - uses: actions/checkout@v7
       - uses: docker/setup-buildx-action@v4
@@ -174,7 +173,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [llama-rocm, llama-engram, whisper-rocm, sd-rocm]
+        target: [llama-rocm, exl3, whisper-rocm, sd-rocm]
     steps:
       - uses: actions/checkout@v7
       # ROCm dev base + build trees are large; stock runners have ~20 GB free
@@ -269,7 +268,6 @@ jobs:
           # GHA cache caps at 10 GB -- far too small here, so cache in the registry
           cache-from: |
             type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-llama-vulkan
-            type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-llama-fpx
             type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-llama-rdna
             type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-whisper-vulkan
             type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-sd-vulkan
@@ -291,7 +289,6 @@ jobs:
             ${{ needs.prepare.outputs.build_args }}
           cache-from: |
             type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-llama-vulkan
-            type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-llama-fpx
             type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-llama-rdna
             type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-whisper-vulkan
             type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-sd-vulkan
@@ -363,14 +360,13 @@ jobs:
             ${{ needs.prepare.outputs.build_args }}
           cache-from: |
             type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-llama-vulkan
-            type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-llama-fpx
             type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-llama-rdna
             type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-whisper-vulkan
             type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-sd-vulkan
             type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-audiocpp
             type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-llama-swap-build
             type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-llama-rocm
-            type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-llama-engram
+            type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-exl3
             type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-whisper-rocm
             type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-sd-rocm
             type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-rocm
@@ -389,14 +385,13 @@ jobs:
             ${{ needs.prepare.outputs.build_args }}
           cache-from: |
             type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-llama-vulkan
-            type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-llama-fpx
             type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-llama-rdna
             type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-whisper-vulkan
             type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-sd-vulkan
             type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-audiocpp
             type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-llama-swap-build
             type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-llama-rocm
-            type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-llama-engram
+            type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-exl3
             type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-whisper-rocm
             type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-sd-rocm
             type=registry,ref=${{ needs.prepare.outputs.image }}:buildcache-rocm

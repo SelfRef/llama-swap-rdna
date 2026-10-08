@@ -21,15 +21,14 @@
 #     as *-rocm binaries next to the Vulkan ones:
 #       llama-server-rocm, llama-cli-rocm, llama-tts-rocm, llama-bench-rocm,
 #       whisper-server-rocm, whisper-cli-rocm, sd-server-rocm, sd-cli-rocm
-#   - EngramHalo.cpp (Aristo94's Strix Halo/qwen4exp fork of llama.cpp, HIP,
-#     gfx1151 only) as *-engram binaries -- see the WITH_ENGRAM arg below
-#   - LaurentZuijdwijk's llama.cpp fork (Vulkan) as *-fpx binaries: it adds the
-#     ROCmFPx weight formats (ROCmFP4 & co., GGUF types stock llama.cpp cannot
-#     load), kernels tuned for the batch widths speculative decoding verifies
-#     at, and adaptive draft sizing -- see the WITH_FPX arg below
-#   - SelfRef/llama.cpp-rdna as *-rdna binaries: the ROCmFPx formats on
-#     current upstream master, plus unupstreamed RDNA3/RDNA3.5 Vulkan patches
+#   - SelfRef/llama.cpp-rdna as *-rdna binaries: the ROCmFPx formats
+#     (ROCmFP4 & co., GGUF types stock llama.cpp cannot load) and adaptive
+#     draft sizing on current upstream master, plus unupstreamed RDNA3/RDNA3.5
+#     Vulkan patches
 #     measured on gfx1100/1101/1151 -- see the WITH_RDNA arg below
+#   - exllamav3-rocm (exllamav3 with RDNA3 kernels) + TabbyAPI in a PyTorch
+#     venv under /opt/exl3, launched as `exl3-server` (gfx1100 only, :full
+#     only) -- see the WITH_EXL3 arg below
 #   - Vulkan builds of llama.cpp, whisper.cpp, sd.cpp and audio.cpp with a
 #     MODERN glslc. Upstream builds them on Ubuntu 24.04 with its stock glslc
 #     (shaderc 2023.8 / glslang 14), which cannot compile the
@@ -80,8 +79,7 @@
 # was built, with the PRs merged, is recorded in /versions.txt.
 #
 # Layout: llama.cpp is installed as self-contained directories
-# /opt/llama-vulkan, /opt/llama-rocm, /opt/llama-engram, /opt/llama-fpx and
-# /opt/llama-rdna
+# /opt/llama-vulkan, /opt/llama-rocm and /opt/llama-rdna
 # (binaries + their shared libs, RPATH $ORIGIN, ggml backends discovered next
 # to the executable) with symlinks in /usr/local/bin, so the builds never
 # share a libggml.
@@ -235,10 +233,28 @@ ARG LLAMA_PATCHES="28265 25592"
 # Cache key only (see LLAMA_SWAP_PATCHES_HEADS).
 ARG LLAMA_PATCHES_HEADS=""
 
-# ── ROCmFPx fork (LaurentZuijdwijk/llama.cpp) ──────────────────────────
-# A SECOND Vulkan llama.cpp install (/opt/llama-fpx, *-fpx binaries) from
-# LaurentZuijdwijk's fork of llama.cpp, which upstream cannot replace because
-# it adds new GGUF tensor types:
+# ── RDNA fork (SelfRef/llama.cpp-rdna) ───────────────────────────────
+# SelfRef's fork of ggml-org/llama.cpp, built as another Vulkan llama.cpp
+# install (/opt/llama-rdna, *-rdna binaries). Created 2026-09-18 because the
+# two things RDNA3 hardware needs had never been in one tree:
+#
+#   - the ROCmFPx weight formats and tooling from LaurentZuijdwijk's
+#     llama.cpp fork (the base of this branch), which upstream does not carry
+#     and probably will not until 0cc4m's #28898 lands FP8/NVFP4 quant scales
+#     in ggml;
+#   - a set of RDNA3/RDNA3.5 Vulkan patches that were written against upstream,
+#     measured, and then NEVER submitted -- they exist only as patch files
+#     passed between community forks (voidsurfer/llama.cpp-nudge <- Nathan
+#     Wilson's strix-halo-vulkan, plus Gaetan Puleo's server fixes).
+#
+# LaurentZuijdwijk's fork cannot host either: it last merged upstream on
+# 2026-08-30 and its owner decides what it carries (the image shipped it as
+# *-fpx until 2026-10-07). Branch `rdna` = that ROCmFPx base plus upstream
+# master plus only the patches that measured as a win on the target cards,
+# every patch on its own `carry/*` branch so one bad upstream merge does not
+# take the rest with it.
+#
+# What the ROCmFPx base brings:
 #
 #   - the ROCmFPx weight formats (Q4_0_ROCMFP4 / _FAST / Q2/Q3/Q6/Q8_0_ROCMFPX,
 #     ggml type ids 100-107, hand-ported from ciru-ai/ROCmFPX <- charlie12345/
@@ -259,7 +275,8 @@ ARG LLAMA_PATCHES_HEADS=""
 # baked MTP head, greedy prose / json / refactor decode t/s:
 #   stock llama-server, unsloth UD-Q4_K_XL (16.35 GiB), n-max 3
 #       60.9 / 83.6 / 94.7   prefill 423 / 328 / 777   VRAM 22.3 G  PPL 6.637
-#   llama-server-fpx, julianmb ROCmFP4-FAST (13.55 GiB, 4.25 bpw), n-max 4
+#   ROCmFPx fork (the former llama-server-fpx), julianmb ROCmFP4-FAST
+#   (13.55 GiB, 4.25 bpw), n-max 4
 #       76.7 / 105.5 / 128.0 prefill 457 / 343 / 921   VRAM 19.0 G  PPL 6.921
 # i.e. +26 / +26 / +35 % decode and -3.3 GiB for +4.3 % perplexity. The FP4
 # format is a software codebook, NOT hardware FP4 (no RDNA GPU has FP4 matrix
@@ -267,47 +284,6 @@ ARG LLAMA_PATCHES_HEADS=""
 # kernels. On the same card the fork's engine work alone, on the same K-quant
 # file, is +5-7 % prefill and neutral decode -- so the file, not the binary, is
 # where most of it comes from; both are needed.
-#
-# Vulkan-only on purpose: the fork ships no HIP kernels for these types. It is
-# built in BOTH published tags (nothing here needs the ROCm runtime). The fork
-# tracks upstream by merging master periodically, so it lags a few weeks; keep
-# `llama-server` the default engine and use this one per config entry.
-#
-# THIS STAGE APPLIES NO PRs, and it cannot: LLAMA_PATCHES is merged into the
-# upstream tree only. Measured 2026-09-10 -- the fork's master last merged
-# upstream at 0190529e (2026-08-30), and merging current master into it gives
-# 11 conflicts (ggml-vulkan.cpp, vulkan-shaders-gen.cpp, llama-kv-cache.cpp,
-# llama-memory-hybrid-idx.*, qwen4exp.cpp, dflash.cpp, convert_hf_to_gguf.py,
-# test-backend-ops.cpp, tools/ui/CMakeLists.txt). Merging a single PR head is
-# no better: the head carries master with it, so it hits the same conflicts.
-# Consequence to keep in mind when reading benchmark rows: `llama-server-fpx`
-# gets NONE of the Vulkan work in LLAMA_PATCHES or in master since 08-30
-# (#27952, #28457, #28422 ...). The fork has not merged upstream since
-# (11bfe8a6, 2026-09-07); the -rdna stage below is the same formats on
-# current master, so prefer it for ROCmFPx models.
-ARG WITH_FPX=true
-ARG FPX_REPO=https://github.com/LaurentZuijdwijk/llama.cpp.git
-ARG FPX_BRANCH=master
-ARG FPX_COMMIT=""
-
-# ── RDNA fork (SelfRef/llama.cpp-rdna) ───────────────────────────────
-# SelfRef's fork of ggml-org/llama.cpp, built as another Vulkan llama.cpp
-# install (/opt/llama-rdna, *-rdna binaries). Created 2026-09-18 because the
-# two things RDNA3 hardware needs had never been in one tree:
-#
-#   - the ROCmFPx weight formats (as in the fpx stage above), which upstream
-#     does not carry and probably will not until 0cc4m's #28898 lands FP8/NVFP4
-#     quant scales in ggml;
-#   - a set of RDNA3/RDNA3.5 Vulkan patches that were written against upstream,
-#     measured, and then NEVER submitted -- they exist only as patch files
-#     passed between community forks (voidsurfer/llama.cpp-nudge <- Nathan
-#     Wilson's strix-halo-vulkan, plus Gaetan Puleo's server fixes).
-#
-# The fpx stage can host neither: it tracks someone else's fork, which cannot
-# take LLAMA_PATCHES (11 conflicts, see above) and whose owner decides what it
-# carries. Branch `rdna` = the ROCmFPx base plus upstream master plus only
-# the patches that measured as a win on the target cards, every patch on its
-# own `carry/*` branch so one bad upstream merge does not take the rest with it.
 #
 # Targets, and the reason for the name: gfx1100 (RX 7900 XTX), gfx1101
 # (RX 7800 XT) and gfx1151 (Strix Halo / Ryzen AI Max+ 395) -- one architecture
@@ -323,36 +299,38 @@ ARG FPX_COMMIT=""
 # build that passes only RDNA_BRANCH silently reuses the layer from whatever the
 # branch pointed at last time: measured 2026-09-18, a rebuild after a force-push
 # returned the PREVIOUS tip's binary and reported the old commit in
-# /versions.txt. The same trap applies to FPX_BRANCH and ENGRAM_BRANCH.
+# /versions.txt.
 # Pass the FULL 40-char sha, never an abbreviation: the clone is a
 # `git fetch --depth=1 origin <ref>`, and GitHub rejects a short sha in a want
 # line -- the stage then fails with a bare `exit code: 128`.
-# The same canaries as the fpx stage guard it: if a merge ever drops the
-# ROCmFPx types or adaptive drafting, the build FAILS instead of shipping a
-# plain llama.cpp under the -rdna name.
+# Canaries guard it: if a merge ever drops the ROCmFPx types or adaptive
+# drafting, the build FAILS instead of shipping a plain llama.cpp under the
+# -rdna name.
 ARG WITH_RDNA=true
 ARG RDNA_REPO=https://github.com/SelfRef/llama.cpp-rdna.git
 ARG RDNA_BRANCH=rdna
 ARG RDNA_COMMIT=""
 
-# ── EngramHalo.cpp ─────────────────────────────────────────────────────
-# EngramHalo.cpp: Aristo94's llama.cpp fork tuned for Qwen 3.8 Flash-Next on
-# Strix Halo (gfx1151) — QSA sparse-gather attention, HIP wide top-k kernel,
-# MTP draft-head speculative decoding, SSD-backed engram (PLE/n-gram) table
-# via --tensor-read-lazy. Built as a THIRD llama.cpp install
-# (/opt/llama-engram, *-engram binaries) next to the Vulkan and ROCm ones,
-# only when WITH_ROCM=true AND WITH_ENGRAM=true — the Vulkan-only image
-# never builds it (the fork is ROCm/HIP-only; Vulkan is reported a net loss
-# upstream). The fork's docs/strix-halo patches (#25992 iGPU host-buffer
-# workaround, per-buffer mmap loader) are applied when they still fit the
-# tree. ENGRAM_TARGETS is gfx1151 alone on purpose: the kernels are tuned for
-# and only validated on Strix Halo. ENGRAM_COMMIT pins the branch to a sha
-# (CI does; empty = branch tip).
-ARG WITH_ENGRAM=true
-ARG ENGRAM_REPO=https://github.com/Aristo94/EngramHalo.cpp.git
-ARG ENGRAM_BRANCH=strix-halo-qwen4exp
-ARG ENGRAM_COMMIT=""
-ARG ENGRAM_TARGETS=gfx1151
+# ── exllamav3 for RDNA3 (TabbyAPI) ─────────────────────────────────────
+# phoenixhaxor/exllamav3-rocm: exllamav3 with its EXL3 matmul, decode/verify
+# attention and Gated DeltaNet kernels rewritten for RDNA3 (wave32, WMMA),
+# served by TabbyAPI (OpenAI API: streaming, tools, images, reasoning) with
+# DFlash2 or MTP speculative decoding. Not a llama.cpp: a PyTorch (ROCm wheels)
+# venv in /opt/exl3 with an `exl3-server` launcher, so a llama-swap entry runs
+# it like any other server (`exl3-server --port ${PORT} --model-dir ...`).
+# Measured on an RX 7900 XTX with Qwen3.8-27B EXL3 3.5 bpw + DFlash2 draft vs
+# llama.cpp ROCmFP4 + MTP, same chat template: decode +14 % prose, +49 % JSON,
+# +67 % code, equal at 8k depth; prefill +30-36 % (README has the table).
+# gfx1100 ONLY (the fork's kernels are wave32/RDNA3 and validated on the XTX),
+# so EXL3_TARGETS is not a list. Only with WITH_ROCM=true AND WITH_EXL3=true:
+# it is a HIP engine and adds ~8 GB (PyTorch's bundled ROCm libraries, already
+# pruned to gfx1100), which the Vulkan-only image must not carry. Built on the
+# classic ROCm toolchain whatever ROCM_CHANNEL says: the PyTorch wheels are
+# ROCm 7.2 builds and the fork is tested on 7.2.4 (= ROCM_VERSION).
+ARG WITH_EXL3=true
+ARG EXL3_REPO=https://github.com/phoenixhaxor/exllamav3-rocm.git
+ARG EXL3_BRANCH=main
+ARG EXL3_COMMIT=""
 
 # ── whisper.cpp, stable-diffusion.cpp, audio.cpp ───────────────────────
 # Revisions (branch, tag or sha) of the other engines; their default branches.
@@ -511,124 +489,10 @@ done
   echo "vulkan_glslc: $(glslc --version | head -1)"; } > /install/build-info/llama-vulkan
 BUILD
 
-# ── Build the ROCmFPx fork (Vulkan) ────────────────────────────────────
-# Second Vulkan llama.cpp install -> /opt/llama-fpx, *-fpx binaries. Same
-# toolchain, cmake flags and relocatable layout as the llama-vulkan stage
-# above; see the WITH_FPX arg for what the fork adds and why upstream cannot
-# replace it. llama-quantize and llama-perplexity come along because they are
-# the only way to PRODUCE and score a ROCmFPx file (from a BF16/F16 source:
-# `llama-quantize-fpx in.gguf out.gguf Q4_0_ROCMFP4_STRIX_LEAN`) -- no other
-# binary in this image knows these types.
-
-FROM vulkan-builder AS llama-fpx
-ARG FPX_REPO
-ARG FPX_BRANCH
-ARG FPX_COMMIT
-RUN --mount=type=cache,id=ccache-vulkan,target=/ccache <<'BUILD'
-#!/bin/bash
-set -euo pipefail
-
-REF="${FPX_COMMIT:-${FPX_BRANCH}}"
-echo "=== Cloning the ROCmFPx fork (${FPX_BRANCH} @ ${REF}) ==="
-mkdir -p /src/llama-fpx && cd /src/llama-fpx
-git init -q
-git remote add origin "${FPX_REPO}"
-git fetch --depth=1 origin "${REF}"
-git checkout -q FETCH_HEAD
-echo "fork at $(git rev-parse HEAD)"
-
-echo "=== glslc feature tests (llama.cpp's own) ==="
-for t in integer_dot bfloat16 coopmat; do
-    f="ggml/src/ggml-vulkan/vulkan-shaders/feature-tests/$t.comp"
-    [ -f "$f" ] || { echo "(no feature test $t in this revision, skipping)"; continue; }
-    if glslc -o /dev/null -fshader-stage=compute --target-env=vulkan1.3 "$f" >/dev/null 2>&1; then
-        echo "  $t: OK"
-    else
-        echo "FATAL: glslc cannot compile $f -- the Vulkan build would lose that code path" >&2
-        exit 1
-    fi
-done
-
-echo "=== Building the ROCmFPx fork (Vulkan) ==="
-cmake -B build \
-    -DGGML_NATIVE=OFF \
-    -DGGML_VULKAN=ON \
-    -DBUILD_SHARED_LIBS=ON \
-    -DGGML_BACKEND_DL=ON \
-    -DGGML_CPU_ALL_VARIANTS=ON \
-    -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_C_COMPILER_LAUNCHER=ccache \
-    -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
-    -DLLAMA_BUILD_TESTS=OFF \
-    -DLLAMA_BUILD_EXAMPLES=OFF \
-    -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
-    -DCMAKE_INSTALL_RPATH='$ORIGIN' \
-    2>&1 | tee /tmp/configure-fpx.log
-for ext in GL_EXT_integer_dot_product GL_EXT_bfloat16 GL_KHR_cooperative_matrix; do
-    line=$(grep -i "$ext" /tmp/configure-fpx.log || true)
-    echo "  cmake: ${line:-<no message for $ext>}"
-    if grep -qi "not supported" <<<"$line"; then
-        echo "FATAL: CMake reports $ext unsupported by glslc" >&2; exit 1; fi
-done
-cmake --build build --config Release -j"$(nproc)"
-
-echo "=== Collecting ==="
-OUT=/install/llama-fpx
-mkdir -p "$OUT" /install/build-info
-for bin in llama-server llama-cli llama-bench llama-quantize llama-perplexity; do
-    [ -f "build/bin/$bin" ] || { echo "FATAL: $bin not built" >&2; exit 1; }
-    cp "build/bin/$bin" "$OUT/${bin}-fpx"
-done
-cp -P build/bin/*.so* "$OUT/"
-ls "$OUT"/libggml-cpu-*.so >/dev/null 2>&1 || { echo "FATAL: no ggml-cpu variants built" >&2; exit 1; }
-ls "$OUT"/libggml-vulkan.so >/dev/null 2>&1 || { echo "FATAL: libggml-vulkan.so not built" >&2; exit 1; }
-# Same relocatable check as the llama-vulkan stage.
-for f in "$OUT"/*; do
-    [ -L "$f" ] && continue
-    rp=$(readelf -d "$f" 2>/dev/null | awk '/RUNPATH|RPATH/ {gsub(/[\[\]]/,"",$NF); print $NF}')
-    if [ -n "$rp" ] && { [[ "$rp" != '$ORIGIN'* ]] || [[ "$rp" == */src/* ]]; }; then
-        echo "FATAL: $f has run path '$rp' (expected \$ORIGIN[:...])" >&2; exit 1; fi
-    if ldd "$f" 2>/dev/null | grep -q "not found"; then
-        echo "FATAL: $f has unresolved libraries" >&2; ldd "$f" | grep "not found" >&2; exit 1; fi
-done
-# A backend .so with an UNDEFINED SYMBOL links fine, then fails dlopen at runtime and
-# ggml silently falls back to the CPU -- measured 2026-09-18: a lost definition in the
-# Vulkan backend produced a binary that passed every canary above, answered correctly,
-# and ran Qwen3.8-27B at 2.7 t/s on 16 CPU threads. ldd -r resolves symbols, ldd does not.
-# APPEND to LD_LIBRARY_PATH, never replace it: the multiarch ROCm toolchain reaches
-# /opt/rocm/lib ONLY through that variable (it adds no ld.so.conf entry -- the runtime
-# image does, which is why the shipped libs resolve there), so overwriting it hides
-# libamdhip64.so and reports every HIP symbol as undefined. Treat "not found" as fatal
-# too, so a dependency that cannot be located can never masquerade as a clean run.
-LDD_PATH="$OUT${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-for lib in "$OUT"/libggml-*.so; do
-    if LD_LIBRARY_PATH="$LDD_PATH" ldd -r "$lib" 2>&1 | grep -qE "undefined symbol|not found"; then
-        echo "FATAL: $lib has undefined symbols (would fail dlopen -> silent CPU fallback):" >&2
-        LD_LIBRARY_PATH="$LDD_PATH" ldd -r "$lib" 2>&1 | grep -E "undefined symbol|not found" | head -5 >&2; exit 1; fi
-done
-# The whole point of this stage: the ROCmFPx tensor types and adaptive
-# drafting must be present. If a later upstream merge in the fork drops
-# either, this build fails instead of silently shipping a plain llama.cpp
-# under the -fpx name (config entries that reference these files would then
-# fail to load a model at runtime).
-# (both binaries print their help to stdout and EXIT 1, so capture first --
-# a `cmd | grep` would fail the build through `pipefail`, not through grep.)
-QHELP=$("$OUT/llama-quantize-fpx" --help 2>&1 || true)
-grep -q 'Q4_0_ROCMFP4_FAST' <<<"$QHELP" || {
-    echo "FATAL: llama-quantize-fpx does not know the ROCmFPx types -- the fork lost them" >&2
-    head -5 <<<"$QHELP" >&2; exit 1; }
-SHELP=$("$OUT/llama-server-fpx" --help 2>&1 || true)
-grep -q -- '--spec-draft-adaptive' <<<"$SHELP" || {
-    echo "FATAL: llama-server-fpx has no --spec-draft-adaptive -- the fork lost adaptive drafting" >&2; exit 1; }
-{ echo "llama_fpx_commit: $(git rev-parse HEAD) (${FPX_REPO} @ ${FPX_BRANCH})";
-  echo "llama_fpx_types: $(sed -n 's/^ *[0-9]* *or *\(Q[0-9]_[0-9]_ROCM[A-Z0-9_]*\) .*/\1/p' <<<"$QHELP" | sort -u | tr '\n' ' ')"; } \
-  > /install/build-info/llama-fpx
-BUILD
-
 # ── Build the RDNA fork (Vulkan) ──────────────────────────────────────
-# SelfRef/llama.cpp-rdna -> /opt/llama-rdna, *-rdna binaries. Identical toolchain and
-# flags to the fpx stage (same vulkan-builder, same ccache); see the WITH_RDNA
-# arg above for what the branch carries and why it exists next to the fpx one.
+# SelfRef/llama.cpp-rdna -> /opt/llama-rdna, *-rdna binaries. Same
+# vulkan-builder and ccache as llama-vulkan; see the WITH_RDNA arg above for
+# what the branch carries.
 
 FROM vulkan-builder AS llama-rdna
 ARG RDNA_REPO
@@ -1136,101 +1000,98 @@ done
   echo "rocm_fa_all_quants: ${LLAMA_FA_ALL_QUANTS}"; } > /install/build-info/llama-rocm
 BUILD
 
-# ── Build EngramHalo.cpp (HIP, Strix Halo only) ────────────────────────
+# ── Build exllamav3-rocm + TabbyAPI (see the WITH_EXL3 arg) ────────────
 
-FROM rocm-builder AS llama-engram
-ARG ENGRAM_REPO
-ARG ENGRAM_BRANCH
-ARG ENGRAM_COMMIT
-ARG ENGRAM_TARGETS
-RUN --mount=type=cache,id=ccache-rocm,target=/ccache <<'BUILD'
+FROM rocm-toolchain-classic AS exl3
+ARG EXL3_REPO
+ARG EXL3_BRANCH
+ARG EXL3_COMMIT
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        git build-essential ca-certificates python3.12-venv python3.12-dev \
+    && rm -rf /var/lib/apt/lists/*
+RUN <<'BUILD'
 #!/bin/bash
 set -euo pipefail
-
-REF="${ENGRAM_COMMIT:-${ENGRAM_BRANCH}}"
-echo "=== Cloning EngramHalo.cpp (${ENGRAM_BRANCH} @ ${REF}) ==="
-mkdir -p /src/engram && cd /src/engram
+REF="${EXL3_COMMIT:-${EXL3_BRANCH}}"
+echo "=== Cloning exllamav3-rocm (${EXL3_BRANCH} @ ${REF}) ==="
+mkdir -p /opt/exl3/exllamav3 && cd /opt/exl3/exllamav3
 git init -q
-git remote add origin "${ENGRAM_REPO}"
+git remote add origin "${EXL3_REPO}"
 git fetch --depth=1 origin "${REF}"
 git checkout -q FETCH_HEAD
-git submodule update --init --recursive --depth=1
-echo "EngramHalo.cpp at $(git rev-parse HEAD)"
+COMMIT=$(git rev-parse HEAD)
+rm -rf .git
 
-# The branch ships its Strix Halo patches in-tree under docs/strix-halo/.
-# Same conditional logic as the fork's own Dockerfile.rocm-7.14: apply while
-# they fit, treat reverse-applying as already-upstream, and only the
-# correctness patch (#25992 multi-slot response mix-up on iGPUs) is fatal
-# when it neither applies nor is present.
-p=docs/strix-halo/llama-cpp-25992-rocm-host-buffer.patch
-if git apply --check "$p" 2>/dev/null; then git apply "$p"; echo "applied: $p"
-elif git apply --reverse --check "$p" 2>/dev/null; then echo "#25992 workaround already present upstream"
-else echo "FATAL: #25992 host-buffer workaround no longer applies -- multi-slot serving would return wrong responses; re-check the branch" >&2; exit 1
-fi
-p=docs/strix-halo/llama-cpp-qwen38-per-buffer-mmap.patch
-if git apply --check "$p" 2>/dev/null; then git apply "$p"; echo "applied: $p"
-else echo "per-buffer mmap loader patch skipped as obsolete"
-fi
+# The fork's rocm/scripts/setup_env.sh, minus huggingface_hub (its httpx2-based
+# releases pin a tokenizers range with no wheel, so pip falls back to building
+# tokenizers 0.13 from source and fails without Rust; nothing at runtime needs it).
+python3.12 -m venv /opt/exl3/venv
+. /opt/exl3/venv/bin/activate
+pip install --no-cache-dir --upgrade pip
+pip install --no-cache-dir torch==2.13.0 --index-url https://download.pytorch.org/whl/rocm7.2
+pip install --no-cache-dir tokenizers "numpy>=2.1" rich typing_extensions safetensors ninja \
+    pillow pyyaml marisa_trie pydantic "llguidance>=1.7.0" setuptools wheel
 
-echo "=== Building EngramHalo.cpp (HIP) for ${ENGRAM_TARGETS} ==="
-# Same relocatable shared/BACKEND_DL layout as the llama-rocm stage. No
-# FA_ALL_QUANTS: this binary serves one model (q8_0/q8_0 KV) and the default
-# FA kernel set already covers q8_0/q8_0 and q4_0/q4_0.
-HIPCXX="${HIPCXX:-$(hipconfig -l)/clang}" HIP_PATH="${HIP_PATH:-$(hipconfig -R)}" \
-cmake -B build \
-    -DGGML_NATIVE=OFF \
-    -DGGML_HIP=ON \
-    -DAMDGPU_TARGETS="${ENGRAM_TARGETS}" \
-    -DBUILD_SHARED_LIBS=ON \
-    -DGGML_BACKEND_DL=ON \
-    -DGGML_CPU_ALL_VARIANTS=ON \
-    -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
-    -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_C_COMPILER_LAUNCHER=ccache \
-    -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
-    -DLLAMA_BUILD_TESTS=OFF \
-    -DLLAMA_BUILD_EXAMPLES=OFF \
-    -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
-    -DCMAKE_INSTALL_RPATH='$ORIGIN'
-cmake --build build --config Release -j"$(nproc)"
+# ROCm 7.2.4's clang 22 rejects the device-only rsqrtf() in host code; harmless
+# no-op once the fork fixes it.
+sed -i 's/sm_scale == 0.0f ? rsqrtf((float) dim)/sm_scale == 0.0f ? 1.0f \/ sqrtf((float) dim)/' \
+    exllamav3/exllamav3_ext/attention.cu
 
-echo "=== Collecting ==="
-OUT=/install/llama-engram
-mkdir -p "$OUT" /install/build-info
-for bin in llama-server llama-cli llama-bench; do
-    [ -f "build/bin/$bin" ] || { echo "FATAL: $bin not built" >&2; exit 1; }
-    cp "build/bin/$bin" "$OUT/${bin}-engram"
-done
-cp -P build/bin/*.so* "$OUT/"
-[ -f "$OUT/libggml-hip.so" ] || { echo "FATAL: libggml-hip.so not built" >&2; exit 1; }
-readelf -d "$OUT/libggml-hip.so" | grep -q 'libamdhip64\.so' || {
-    echo "FATAL: libggml-hip.so is not linked against the HIP runtime" >&2; exit 1; }
-ls "$OUT"/libggml-cpu-*.so >/dev/null 2>&1 || { echo "FATAL: no ggml-cpu variants built" >&2; exit 1; }
-for f in "$OUT"/*; do
-    [ -L "$f" ] && continue
-    rp=$(readelf -d "$f" 2>/dev/null | awk '/RUNPATH|RPATH/ {gsub(/[\[\]]/,"",$NF); print $NF}')
-    if [ -n "$rp" ] && { [[ "$rp" != '$ORIGIN'* ]] || [[ "$rp" == */src/* ]]; }; then
-        echo "FATAL: $f has run path '$rp' (expected \$ORIGIN[:...])" >&2; exit 1; fi
-    if ldd "$f" 2>/dev/null | grep -q "not found"; then
-        echo "FATAL: $f has unresolved libraries" >&2; ldd "$f" | grep "not found" >&2; exit 1; fi
-done
-# A backend .so with an UNDEFINED SYMBOL links fine, then fails dlopen at runtime and
-# ggml silently falls back to the CPU -- measured 2026-09-18: a lost definition in the
-# Vulkan backend produced a binary that passed every canary above, answered correctly,
-# and ran Qwen3.8-27B at 2.7 t/s on 16 CPU threads. ldd -r resolves symbols, ldd does not.
-# APPEND to LD_LIBRARY_PATH, never replace it: the multiarch ROCm toolchain reaches
-# /opt/rocm/lib ONLY through that variable (it adds no ld.so.conf entry -- the runtime
-# image does, which is why the shipped libs resolve there), so overwriting it hides
-# libamdhip64.so and reports every HIP symbol as undefined. Treat "not found" as fatal
-# too, so a dependency that cannot be located can never masquerade as a clean run.
-LDD_PATH="$OUT${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-for lib in "$OUT"/libggml-*.so; do
-    if LD_LIBRARY_PATH="$LDD_PATH" ldd -r "$lib" 2>&1 | grep -qE "undefined symbol|not found"; then
-        echo "FATAL: $lib has undefined symbols (would fail dlopen -> silent CPU fallback):" >&2
-        LD_LIBRARY_PATH="$LDD_PATH" ldd -r "$lib" 2>&1 | grep -E "undefined symbol|not found" | head -5 >&2; exit 1; fi
-done
-{ echo "llama_engram_commit: $(git rev-parse HEAD) (${ENGRAM_REPO} @ ${ENGRAM_BRANCH})";
-  echo "llama_engram_targets: ${ENGRAM_TARGETS}"; } > /install/build-info/llama-engram
+echo "=== Building exllamav3_ext for gfx1100 ==="
+# = rocm/scripts/build.sh without its final import check (that one needs a GPU)
+CC=/opt/rocm/llvm/bin/clang CXX=/opt/rocm/llvm/bin/clang++ PYTORCH_ROCM_ARCH=gfx1100 \
+MAX_JOBS="$(nproc)" ROCM_HOME=/opt/rocm python setup.py build_ext --inplace --force
+EXLLAMA_NOCOMPILE=1 pip install --no-cache-dir -e . --no-deps --no-build-isolation
+rm -rf build
+
+echo "=== TabbyAPI ==="
+# The fork's installer pins the tested TabbyAPI commit and applies its RDNA3
+# patch. TabbyAPI ships its own models/ dir, so the installer's symlink lands
+# inside it; drop both, models are passed with --model-dir.
+mkdir -p /tmp/models
+bash rocm/scripts/install_tabbyapi.sh /opt/exl3/tabbyAPI /tmp/models
+TABBY_COMMIT=$(git -C /opt/exl3/tabbyAPI rev-parse HEAD)
+rm -rf /opt/exl3/tabbyAPI/.git /opt/exl3/tabbyAPI/models /opt/exl3/tabbyAPI/config.yml /tmp/models
+mkdir -p /opt/exl3/tabbyAPI/models
+# The image's Qwen templates, selectable with --prompt-template qwen-fixed / qwen-sharp.
+ln -s /etc/llama-swap/templates/qwen-fixed.jinja /opt/exl3/tabbyAPI/templates/qwen-fixed.jinja
+ln -s /etc/llama-swap/templates/qwen-sharp.jinja /opt/exl3/tabbyAPI/templates/qwen-sharp.jinja
+
+# PyTorch's wheels bundle rocBLAS/hipBLASLt/MIOpen/AOTriton kernels for every
+# ROCm GPU (~7 GB); the extension only ever runs on gfx1100.
+SP=/opt/exl3/venv/lib/python3.12/site-packages
+before=$(du -sm "$SP" | cut -f1)
+find "$SP/torch/lib" "$SP/torch/share" -regextype posix-extended -type f \
+    -regex '.*gfx[0-9]+[a-z0-9]*.*' ! -regex '.*gfx(1100|110x)([^0-9a-z].*|$)' -delete
+find "$SP/torch/lib" "$SP/torch/share" -type d -empty -delete
+echo "pruned $(( before - $(du -sm "$SP" | cut -f1) )) MB of non-gfx1100 kernels"
+find /opt/exl3 -name __pycache__ -type d -prune -exec rm -rf {} +
+
+# Canary: the extension must import (no GPU needed to load it) and TabbyAPI must
+# accept the RDNA3 backend.
+cd /
+python -c "import torch; from exllamav3.ext import exllamav3_ext; print('exllamav3_ext loads, torch', torch.__version__, torch.version.hip)"
+(cd /opt/exl3/tabbyAPI && python main.py --help >/dev/null)
+
+mkdir -p /opt/exl3/bin
+cat > /opt/exl3/bin/exl3-server <<'EOF'
+#!/bin/sh
+# TabbyAPI on exllamav3-rocm. Every TabbyAPI config key is also a flag
+# (`exl3-server --help`); --config is optional. EXL3_NOGRAPH=mlp,gdn is the
+# fork's default (eager MLP/DeltaNet decode is ~0.5 % faster than HIP graphs).
+export PYTHONPATH="/opt/exl3/exllamav3${PYTHONPATH:+:$PYTHONPATH}"
+export EXL3_NOGRAPH="${EXL3_NOGRAPH-mlp,gdn}"
+cd /opt/exl3/tabbyAPI
+exec /opt/exl3/venv/bin/python main.py "$@"
+EOF
+chmod 755 /opt/exl3/bin/exl3-server
+
+mkdir -p /install/build-info
+{ echo "exl3_commit: ${COMMIT} (${EXL3_REPO} @ ${EXL3_BRANCH})";
+  echo "exl3_tabbyapi_commit: ${TABBY_COMMIT}";
+  echo "exl3_torch: $(python -c 'import torch; print(torch.__version__)')";
+  echo "exl3_targets: gfx1100"; } > /install/build-info/exl3
 BUILD
 
 # ── Build whisper.cpp (HIP) ────────────────────────────────────────────
@@ -1338,7 +1199,7 @@ BUILD
 # HIP builders are never started.
 
 FROM alpine:3 AS rocm-none
-RUN mkdir -p /install/bin /install/llama-rocm /install/llama-engram /install/build-info
+RUN mkdir -p /install/bin /install/llama-rocm /install/build-info
 
 FROM llama-rocm   AS llama-rocm-true
 FROM whisper-rocm AS whisper-rocm-true
@@ -1351,29 +1212,10 @@ FROM llama-rocm-${WITH_ROCM}   AS llama-rocm-sel
 FROM whisper-rocm-${WITH_ROCM} AS whisper-rocm-sel
 FROM sd-rocm-${WITH_ROCM}      AS sd-rocm-sel
 
-# Engram needs BOTH switches on (it links the ROCm runtime, which only the
-# WITH_ROCM image installs), so the selection key is the concatenated pair.
-FROM llama-engram AS llama-engram-true-true
-FROM rocm-none    AS llama-engram-true-false
-FROM rocm-none    AS llama-engram-false-true
-FROM rocm-none    AS llama-engram-false-false
-FROM llama-engram-${WITH_ROCM}-${WITH_ENGRAM} AS llama-engram-sel
-
-# ── ROCmFPx fork selection (WITH_FPX) ──────────────────────────────────
+# ── RDNA fork selection (WITH_RDNA) ───────────────────────────────────
 # Vulkan-only, so this switch is independent of WITH_ROCM and the stage is
 # built for BOTH published tags. Its own empty stand-in keeps the two knobs
 # separable (rocm-none exists only to serve the ROCm side).
-
-FROM alpine:3 AS fpx-none
-RUN mkdir -p /install/llama-fpx /install/build-info
-
-FROM llama-fpx AS llama-fpx-true
-FROM fpx-none  AS llama-fpx-false
-FROM llama-fpx-${WITH_FPX} AS llama-fpx-sel
-
-# ── RDNA3 fork selection (WITH_RDNA) ──────────────────────────────────
-# Same shape as the fpx switch above: Vulkan-only, in BOTH published tags,
-# independent of WITH_ROCM.
 
 FROM alpine:3 AS rdna-none
 RUN mkdir -p /install/llama-rdna /install/build-info
@@ -1381,6 +1223,18 @@ RUN mkdir -p /install/llama-rdna /install/build-info
 FROM llama-rdna AS llama-rdna-true
 FROM rdna-none  AS llama-rdna-false
 FROM llama-rdna-${WITH_RDNA} AS llama-rdna-sel
+
+# ── exllamav3-rocm selection (WITH_ROCM x WITH_EXL3) ──────────────────
+# Needs BOTH switches on (it links the ROCm runtime, which only the WITH_ROCM
+# image installs), so the selection key is the concatenated pair.
+FROM alpine:3 AS exl3-none
+RUN mkdir -p /opt/exl3 /install/build-info
+
+FROM exl3      AS exl3-true-true
+FROM exl3-none AS exl3-true-false
+FROM exl3-none AS exl3-false-true
+FROM exl3-none AS exl3-false-false
+FROM exl3-${WITH_ROCM}-${WITH_EXL3} AS exl3-sel
 
 # ══════════════════════════════════════════════════════════════════════
 # ── Final image: Ubuntu 24.04 runtime (+ ROCm) + everything built above ──
@@ -1394,9 +1248,8 @@ ARG MESA_PPA
 ARG QWEN_TEMPLATE_URL
 ARG QWEN_SHARP_TEMPLATE_URL
 ARG WITH_ROCM
-ARG WITH_ENGRAM
-ARG WITH_FPX
 ARG WITH_RDNA
+ARG WITH_EXL3
 
 LABEL org.opencontainers.image.source="https://github.com/SelfRef/llama-swap-rdna" \
       org.opencontainers.image.description="llama-swap unified image for AMD GPUs (ROCm + Vulkan)"
@@ -1476,6 +1329,13 @@ RUN if [ "${WITH_ROCM}" = "true" ]; then \
     && ldconfig; \
     fi
 
+# exllamav3-rocm's prefill attention is Triton, which compiles a small C launcher
+# per kernel signature at runtime with the system C compiler + Python headers.
+RUN if [ "${WITH_ROCM}" = "true" ] && [ "${WITH_EXL3}" = "true" ]; then \
+    apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev python3.12-dev \
+    && rm -rf /var/lib/apt/lists/*; \
+    fi
+
 ENV PATH="/opt/rocm/bin:${PATH}"
 
 RUN mkdir -p /etc/llama-swap/config /models
@@ -1490,9 +1350,8 @@ COPY --from=llama-swap-build /install/bin/ /usr/local/bin/
 COPY --from=llama-rocm-sel   /install/llama-rocm/ /opt/llama-rocm/
 COPY --from=whisper-rocm-sel /install/bin/ /usr/local/bin/
 COPY --from=sd-rocm-sel      /install/bin/ /usr/local/bin/
-COPY --from=llama-engram-sel /install/llama-engram/ /opt/llama-engram/
-COPY --from=llama-fpx-sel    /install/llama-fpx/ /opt/llama-fpx/
 COPY --from=llama-rdna-sel  /install/llama-rdna/ /opt/llama-rdna/
+COPY --from=exl3-sel         /opt/exl3/ /opt/exl3/
 # build-info of every stage -> /versions.txt below
 COPY --from=llama-vulkan     /install/build-info/ /tmp/build-info/
 COPY --from=whisper-vulkan   /install/build-info/ /tmp/build-info/
@@ -1502,9 +1361,8 @@ COPY --from=llama-swap-build /install/build-info/ /tmp/build-info/
 COPY --from=llama-rocm-sel   /install/build-info/ /tmp/build-info/
 COPY --from=whisper-rocm-sel /install/build-info/ /tmp/build-info/
 COPY --from=sd-rocm-sel      /install/build-info/ /tmp/build-info/
-COPY --from=llama-engram-sel /install/build-info/ /tmp/build-info/
-COPY --from=llama-fpx-sel    /install/build-info/ /tmp/build-info/
 COPY --from=llama-rdna-sel  /install/build-info/ /tmp/build-info/
+COPY --from=exl3-sel         /install/build-info/ /tmp/build-info/
 RUN for bin in llama-server llama-cli llama-tts llama-bench; do \
         ln -sf "/opt/llama-vulkan/$bin" "/usr/local/bin/$bin"; \
         if [ "${WITH_ROCM}" = "true" ]; then \
@@ -1512,21 +1370,14 @@ RUN for bin in llama-server llama-cli llama-tts llama-bench; do \
         fi; \
     done \
     && { [ "${WITH_ROCM}" = "true" ] || rmdir /opt/llama-rocm; } \
-    && if [ "${WITH_ROCM}" = "true" ] && [ "${WITH_ENGRAM}" = "true" ]; then \
-        for bin in llama-server llama-cli llama-bench; do \
-            ln -sf "/opt/llama-engram/$bin-engram" "/usr/local/bin/$bin-engram"; \
-        done; \
-    else rmdir /opt/llama-engram; fi \
-    && if [ "${WITH_FPX}" = "true" ]; then \
-        for bin in llama-server llama-cli llama-bench llama-quantize llama-perplexity; do \
-            ln -sf "/opt/llama-fpx/$bin-fpx" "/usr/local/bin/$bin-fpx"; \
-        done; \
-    else rmdir /opt/llama-fpx; fi \
     && if [ "${WITH_RDNA}" = "true" ]; then \
         for bin in llama-server llama-cli llama-bench llama-quantize llama-perplexity; do \
             ln -sf "/opt/llama-rdna/$bin-rdna" "/usr/local/bin/$bin-rdna"; \
         done; \
     else rmdir /opt/llama-rdna; fi \
+    && if [ "${WITH_ROCM}" = "true" ] && [ "${WITH_EXL3}" = "true" ]; then \
+        ln -sf /opt/exl3/bin/exl3-server /usr/local/bin/exl3-server; \
+    else rmdir /opt/exl3; fi \
     && ldconfig
 
 # Example config with both backends; override by mounting /etc/llama-swap/config
@@ -1575,17 +1426,16 @@ if [ "${WITH_ROCM}" = "true" ]; then
     BINS="$BINS llama-server-rocm llama-cli-rocm llama-tts-rocm llama-bench-rocm whisper-server-rocm whisper-cli-rocm sd-server-rocm sd-cli-rocm"
     SERVERS="$SERVERS llama-server-rocm"
 fi
-if [ "${WITH_ROCM}" = "true" ] && [ "${WITH_ENGRAM}" = "true" ]; then
-    BINS="$BINS llama-server-engram llama-cli-engram llama-bench-engram"
-    SERVERS="$SERVERS llama-server-engram"
-fi
-if [ "${WITH_FPX}" = "true" ]; then
-    BINS="$BINS llama-server-fpx llama-cli-fpx llama-bench-fpx llama-quantize-fpx llama-perplexity-fpx"
-    SERVERS="$SERVERS llama-server-fpx"
-fi
 if [ "${WITH_RDNA}" = "true" ]; then
     BINS="$BINS llama-server-rdna llama-cli-rdna llama-bench-rdna llama-quantize-rdna llama-perplexity-rdna"
     SERVERS="$SERVERS llama-server-rdna"
+fi
+if [ "${WITH_ROCM}" = "true" ] && [ "${WITH_EXL3}" = "true" ]; then
+    # Python, so no ldd: the extension must import on the RUNTIME image (its HIP
+    # libraries come from the PyTorch wheels, not from the ROCm runtime above).
+    (cd / && PYTHONPATH=/opt/exl3/exllamav3 /opt/exl3/venv/bin/python -c "from exllamav3.ext import exllamav3_ext") \
+        || { echo "FATAL: exllamav3_ext does not import in the runtime image" >&2; exit 1; }
+    exl3-server --help >/dev/null || { echo "FATAL: exl3-server (TabbyAPI) does not start" >&2; exit 1; }
 fi
 for bin in $BINS; do
     out=$(ldd "$(readlink -f "$(command -v "$bin")")")
@@ -1595,7 +1445,7 @@ for bin in $BINS; do
         exit 1
     fi
 done
-for lib in /opt/llama-vulkan/*.so* $([ "${WITH_ROCM}" = "true" ] && echo /opt/llama-rocm/*.so*) $([ -d /opt/llama-engram ] && echo /opt/llama-engram/*.so*) $([ -d /opt/llama-fpx ] && echo /opt/llama-fpx/*.so*) $([ -d /opt/llama-rdna ] && echo /opt/llama-rdna/*.so*); do
+for lib in /opt/llama-vulkan/*.so* $([ "${WITH_ROCM}" = "true" ] && echo /opt/llama-rocm/*.so*) $([ -d /opt/llama-rdna ] && echo /opt/llama-rdna/*.so*); do
     if ldd "$lib" | grep -q 'not found'; then
         echo "FATAL: $lib has unresolved libraries" >&2; ldd "$lib" | grep 'not found' >&2; exit 1; fi
 done
@@ -1646,7 +1496,7 @@ first() { awk -v k="$1" '$1==k {print $2; exit}' "/tmp/build-info/$2"; }
   fi
   echo "mesa_vulkan_drivers: $(dpkg-query -W -f '${Version}' mesa-vulkan-drivers) (${MESA_PPA:-ubuntu})"
   echo "cpu_variants: $(ls /opt/llama-vulkan/libggml-cpu-*.so | sed 's|.*/libggml-cpu-||; s|\.so||' | tr '\n' ' ')"
-  for f in llama-swap llama-vulkan llama-rocm llama-engram llama-fpx llama-rdna whisper-vulkan whisper-rocm sd-vulkan sd-rocm audiocpp; do
+  for f in llama-swap llama-vulkan llama-rocm llama-rdna exl3 whisper-vulkan whisper-rocm sd-vulkan sd-rocm audiocpp; do
     [ -f "/tmp/build-info/$f" ] && cat "/tmp/build-info/$f"
   done
   echo "qwen_chat_template: $(grep -o 'template_version = "[^"]*"' /etc/llama-swap/templates/qwen-fixed.jinja | head -1 | cut -d'"' -f2) (${QWEN_TEMPLATE_URL})"

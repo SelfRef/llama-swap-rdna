@@ -5,10 +5,9 @@
 #   Vulkan:      llama-server, whisper-server, sd-server, ...
 # Pick per model whichever backend suits your GPU. audio.cpp (audiocpp_server)
 # is Vulkan-only. Both llama.cpp builds are current master plus the open
-# upstream PRs listed in the Dockerfile (LLAMA_PATCHES); `llama-server-engram`
-# (Strix Halo fork, :full tag only) and `llama-server-fpx` (ROCmFPx fork, both
-# tags -- the only build that can load ROCmFP4/ROCmFPx weight files) are the
-# other two llama.cpp installs. Full config reference:
+# upstream PRs listed in the Dockerfile (LLAMA_PATCHES); `llama-server-rdna`
+# (SelfRef/llama.cpp-rdna, Vulkan, both tags -- the only build that can load
+# ROCmFP4/ROCmFPx weight files) is the third llama.cpp install. Full config reference:
 # https://github.com/mostlygeek/llama-swap/wiki/Configuration
 
 healthCheckTimeout: 300
@@ -31,10 +30,10 @@ models:
       --port ${PORT}
       -ngl 999
 
-  # ROCmFPx fork: the ROCmFP4 weight formats stock llama.cpp cannot load, plus
-  # adaptive draft sizing. On an RX 7900 XTX, Qwen3.8-27B ROCmFP4-FAST with the
+  # llama.cpp-rdna: the ROCmFP4 weight formats stock llama.cpp cannot load,
+  # plus adaptive draft sizing. On an RX 7900 XTX, Qwen3.8-27B ROCmFP4-FAST with the
   # model's own MTP head decodes ~26-35% faster than the same model as
-  # UD-Q4_K_XL on `llama-server`, in 3.3 GiB less VRAM (see the WITH_FPX arg in
+  # UD-Q4_K_XL on `llama-server`, in 3.3 GiB less VRAM (see the WITH_RDNA arg in
   # the Dockerfile for the numbers and the quality cost).
   # Set the context and KV types explicitly: the default (full training context,
   # f16 K and V) does not fit in 24 GB and spills to GTT, 4-5x slower. f16 K is
@@ -42,7 +41,7 @@ models:
   # back the VRAM. -ctk q8_0 -ctv q8_0 also fits.
   "qwen38-fp4":
     cmd: >
-      llama-server-fpx
+      llama-server-rdna
       -hf julianmb/Qwen-3.8-27B-ROCmFP4-FAST-GGUF:FAST
       --port ${PORT}
       -ngl 999
