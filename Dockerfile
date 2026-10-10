@@ -194,6 +194,11 @@ ARG LLAMA_COMMIT="master"
 #          TG at batch 4-8, i.e. --parallel 2 plus MTP verify batches)
 #   #25592 exact-position checkpoint restore for hybrid/recurrent models
 #          (agentic multi-turn @130k: 35 s -> 1.3 s turn restore)
+#   #30283 clamp the A prefetch to end_k in the int8 coopmat1 matmul (RDNA3/4),
+#          as the B prefetch already is; without it a row whose K is not a
+#          multiple of 128 reads the next row's blocks (NaN on a non-finite
+#          scale). Added 2026-10-10; MoE pp2048 -0.4 %, decode flat. The
+#          llama.cpp-rdna binaries carry the same fix.
 # plus two PRs carried as rebased patches because they no longer merge as-is
 # (see patches/README.md): #25666 (no MMVQ for speculative-decode steps on
 # AMD; only gfx1151 numbers exist upstream -- delete it if a discrete-GPU
@@ -231,7 +236,7 @@ ARG LLAMA_COMMIT="master"
 # backends -- so a patch has to be generated against the tree with ALL the
 # other merges in it, not just against master (see patches/README.md).
 # Retire PRs from the list as they merge (the build says so).
-ARG LLAMA_PATCHES="28265 25592"
+ARG LLAMA_PATCHES="28265 25592 30283"
 
 # Cache key only (see LLAMA_SWAP_PATCHES_HEADS).
 ARG LLAMA_PATCHES_HEADS=""
