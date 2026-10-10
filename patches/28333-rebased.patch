@@ -1,13 +1,13 @@
 diff --git a/common/speculative.cpp b/common/speculative.cpp
-index a7f095a12..f7d721f59 100644
+index c5043a4a8..16f9d59dc 100644
 --- a/common/speculative.cpp
 +++ b/common/speculative.cpp
-@@ -1585,6 +1585,11 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
- 
-                 const int32_t idx = batch.add(batch_in.tokens[k].id, batch_in.tokens[k].pos[0], seq_id, false);
+@@ -1589,6 +1589,11 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
+                     ? batch.add(t.id, t.pos[0], seq_id, false)
+                     : batch.add_embd(t.embd, t.pos.data(), seq_id, false);
  
 +                // zero the carrier at sequence start, or a fresh request inherits the previous one's
-+                if (k == i_batch_beg[seq_id] && batch_in.tokens[k].pos[0] == 0) {
++                if (k == i_batch_beg[seq_id] && t.pos[0] == 0) {
 +                    std::fill(pending_h[seq_id].begin(), pending_h[seq_id].end(), 0.0f);
 +                }
 +

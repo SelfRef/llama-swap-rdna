@@ -12,6 +12,11 @@ first. The exact revisions inside any given image are in its `/versions.txt`.
   The `-rdna` binaries already had this fix. The entry drops out by itself
   once the PR merges upstream.
 
+- **Both llama.cpp builds (Vulkan and ROCm) build again.** Upstream master
+  reworked the MTP draft loop, so the local copy of PR #28333 (a fresh request
+  no longer inherits the previous request's MTP state) stopped applying and
+  failed the build. It is rebased with the same logic.
+
 - **`exl3-server`: streamed tool calls reach LangChain clients.** TabbyAPI's
   stream deltas had no `role`, so LangChain's OpenAI client (LibreChat, n8n)
   dropped their `tool_calls` and a tool call arrived as an empty reply. Every

@@ -48,7 +48,9 @@ Master moved the MTP catch-up decode to `llama_batch_ext`: the per-sequence
 `set_h()` call the PR edits is gone, replaced by one loop that adds each token and
 picks its embedding row. The patch puts the PR's zero-fill into that loop, at the
 first token of a sequence whose position is 0 -- the same condition as the PR, one
-hunk. Delete it and put `28333` back in `LLAMA_PATCHES` once the author rebases.
+hunk. Re-anchored on 2026-10-10 (master `781dbc5ac` + `30283`): that loop now names the
+token `t` and adds vision tokens by embedding, so the hunk sits after the
+`add`/`add_embd` branch and reads `t.pos[0]`; the logic is unchanged. Delete it and put `28333` back in `LLAMA_PATCHES` once the author rebases.
 
 ## Retired
 
