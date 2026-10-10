@@ -6,6 +6,14 @@ first. The exact revisions inside any given image are in its `/versions.txt`.
 
 ## 2026-10-10
 
+- **`exl3-server`: DFlash2 no longer crashes at `--max-batch-size` above 1.**
+  As soon as two requests ran together, the draft step failed on a strided
+  tensor, aborted every running request and clients got HTTP 503. This is
+  upstream exllamav3's fix `575279513`, patched into the fork's checkout; the
+  build fails if the patch stops applying. The README's exl3 section now
+  explains what batch size, cache size, the health timeout and
+  `EXL3_EXPANDABLE_SEGMENTS=0` do for a served entry.
+
 - **`llama-server` (master-based Vulkan) merges upstream PR #30283**: the
   int8 coopmat1 matmul on RDNA3/4 no longer reads the next row's weights when
   K is not a multiple of 128, which could turn a whole output row into NaN.

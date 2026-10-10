@@ -1046,6 +1046,15 @@ pip install --no-cache-dir tokenizers "numpy>=2.1" rich typing_extensions safete
 sed -i 's/sm_scale == 0.0f ? rsqrtf((float) dim)/sm_scale == 0.0f ? 1.0f \/ sqrtf((float) dim)/' \
     exllamav3/exllamav3_ext/attention.cu
 
+# DFlash2 draft crashes as soon as two jobs share a batch (--max-batch-size > 1):
+# walk_block() hands a strided hidden state to .view(), every job is aborted and
+# clients get HTTP 503. Upstream exllamav3 575279513 adds .contiguous(); no-op
+# once the fork syncs it.
+sed -i 's/self\.hidden_proj\.forward(hidden\.half(), params = {})/self.hidden_proj.forward(hidden.half().contiguous(), params = {})/' \
+    exllamav3/modules/arch_specific/dflash2.py
+grep -q 'hidden_proj.forward(hidden.half().contiguous()' exllamav3/modules/arch_specific/dflash2.py \
+    || { echo "FATAL: DFlash2 walk_block contiguous patch no longer applies" >&2; exit 1; }
+
 echo "=== Building exllamav3_ext for gfx1100 ==="
 # = rocm/scripts/build.sh without its final import check (that one needs a GPU)
 CC=/opt/rocm/llvm/bin/clang CXX=/opt/rocm/llvm/bin/clang++ PYTORCH_ROCM_ARCH=gfx1100 \

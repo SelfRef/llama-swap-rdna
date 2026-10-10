@@ -161,6 +161,13 @@ qwen38-exl3:
 
 That is the fork's `config.dflash2-192k.yml` as flags (~23.6 GB VRAM). For the full 262,144 context use `--draft-mode mtp --draft-cache-mode Q8` (the MTP head is inside the main model) and drop the draft model flags. The container needs `/dev/kfd` as well as the render node.
 
+Notes for running it as a served entry rather than a benchmark:
+
+- **`--max-batch-size` is the number of requests generated at once, not a limit on clients.** Requests beyond it wait in exllamav3's queue and are answered in order. `--cache-size` is one page pool that all running jobs share; it is not split per slot. A job only waits if the pool is out of free pages. On Qwen3.8-27B (recurrent layers) each extra slot costs about 1.1 GB of VRAM: with this example, batch 2 needs 23.6 GB instead of 22.5 GB on a 24 GB card and finished 4 concurrent requests 28 % sooner. Batch 3 or more needs a smaller `--cache-size`.
+- **Batch sizes above 1 need the 2026-10-10 image or newer.** Before that, the DFlash2 draft crashed as soon as two jobs ran together, aborting every running request with HTTP 503 (fixed upstream in exllamav3 `575279513`; the image patches the fork until it syncs).
+- Loading takes about 2 minutes, longer than llama-swap's default 120 s `healthCheckTimeout`; set it to 300 or more. `/health` returns 200 once the model is loaded (TabbyAPI loads the model before it opens the port).
+- If the load dies with `Memory access fault by GPU … Page not present` (seen on some 7900 XTX systems, see [exllamav3-rocm#1](https://github.com/phoenixhaxor/exllamav3-rocm/issues/1)), add `EXL3_EXPANDABLE_SEGMENTS=0` to the entry's `env`. That turns off PyTorch's expandable-segments allocator, which exllamav3 enables by default.
+
 Measured on an RX 7900 XTX against this image's best llama.cpp path for the same model (`llama-server-rdna`, ROCmFP4-FAST + MTP n4), same chat template (`qwen-sharp`), greedy, single stream, client-side timing (t/s, exl3 vs llama.cpp):
 
 | | DFlash2, 192k | MTP, 256k | llama.cpp |
