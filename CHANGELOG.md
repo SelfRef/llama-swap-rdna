@@ -18,7 +18,11 @@ first. The exact revisions inside any given image are in its `/versions.txt`.
   int8 coopmat1 matmul on RDNA3/4 no longer reads the next row's weights when
   K is not a multiple of 128, which could turn a whole output row into NaN.
   The `-rdna` binaries already had this fix. The entry drops out by itself
-  once the PR merges upstream.
+  once the PR merges upstream. Later the same day the PR was reworked after
+  review: a row whose own padded block had an inf scale could still come out
+  NaN instead of inf, so a padded k step now also contributes a zero scale.
+  Both llama.cpp builds pick that up (the `-rdna` binaries from the fork,
+  `llama-server` from the PR's new head); prefill is under 1 % slower.
 
 - **Both llama.cpp builds (Vulkan and ROCm) build again.** Upstream master
   reworked the MTP draft loop, so the local copy of PR #28333 (a fresh request
