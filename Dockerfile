@@ -1057,6 +1057,13 @@ bash rocm/scripts/install_tabbyapi.sh /opt/exl3/tabbyAPI /tmp/models
 TABBY_COMMIT=$(git -C /opt/exl3/tabbyAPI rev-parse HEAD)
 rm -rf /opt/exl3/tabbyAPI/.git /opt/exl3/tabbyAPI/models /opt/exl3/tabbyAPI/config.yml /tmp/models
 mkdir -p /opt/exl3/tabbyAPI/models
+# Stream deltas carry no "role"; LangChain's OpenAI client (LibreChat, n8n)
+# then builds a generic chunk and drops the delta's tool_calls, so a tool call
+# streams as an empty reply. Add the role OpenAI and llama-server send.
+sed -i 's/^\(        delta\["tool_calls"\] = delta_tool\)$/\1\n    if delta:\n        delta["role"] = "assistant"/' \
+    /opt/exl3/tabbyAPI/endpoints/OAI/utils/chat_completion.py
+grep -q 'delta\["role"\] = "assistant"' /opt/exl3/tabbyAPI/endpoints/OAI/utils/chat_completion.py \
+    || { echo "FATAL: TabbyAPI stream-delta role patch no longer applies" >&2; exit 1; }
 # The image's Qwen templates, selectable with --prompt-template qwen-fixed / qwen-sharp.
 ln -s /etc/llama-swap/templates/qwen-fixed.jinja /opt/exl3/tabbyAPI/templates/qwen-fixed.jinja
 ln -s /etc/llama-swap/templates/qwen-sharp.jinja /opt/exl3/tabbyAPI/templates/qwen-sharp.jinja

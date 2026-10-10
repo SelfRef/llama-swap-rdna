@@ -4,6 +4,14 @@ The image has no version numbers: every push and the scheduled rebuild publish
 from the then-current upstream branches, so changes are grouped by date. Newest
 first. The exact revisions inside any given image are in its `/versions.txt`.
 
+## 2026-10-10
+
+- **`exl3-server`: streamed tool calls reach LangChain clients.** TabbyAPI's
+  stream deltas had no `role`, so LangChain's OpenAI client (LibreChat, n8n)
+  dropped their `tool_calls` and a tool call arrived as an empty reply. Every
+  non-empty delta now carries `"role": "assistant"`, as OpenAI and
+  llama-server send it. The build fails if the patch stops applying.
+
 ## 2026-10-08
 
 - **ROCm targets reduced to `gfx1100;gfx1101;gfx1151;gfx1200;gfx1201`** (RX 7900,
