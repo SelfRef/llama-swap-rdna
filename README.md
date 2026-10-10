@@ -25,6 +25,8 @@ Both llama.cpp backends are built with runtime CPU dispatch (`GGML_CPU_ALL_VARIA
 | `benchmark` (this repo, `scripts/benchmark`) | one CLI for server-level / `llama-bench` / standalone-variant benchmarks of the config's text entries, see [Benchmarking](#benchmarking) | (uses the `*-rocm` / `*-rdna` binaries via `--variant`) |
 | `rerank-bench` (this repo, `scripts/rerank-bench`) | retrieval quality (nDCG@10) of the config's reranker entries over a cached embedding stage, see [Reranker quality](#reranker-quality-rerank-bench) | — |
 
+**ROCmFPx / ROCmFP4 GGUFs (`Q4_0_ROCMFP4_FAST` and friends) load only in the `*-rdna` binaries.** Stock `llama-server` / `llama-server-rocm` exit with `tensor '…' has invalid ggml type 101`, so benchmark those files with `llama-bench-rdna` or `benchmark --standalone --variant rdna`, not the stock binaries (see [The RDNA fork](#the-rdna-fork)).
+
 llama.cpp lives in self-contained directories `/opt/llama-vulkan`, `/opt/llama-rocm` and `/opt/llama-rdna` (binaries, `libllama`/`libggml*` and the per-CPU-level `libggml-cpu-*.so` variants, RPATH `$ORIGIN`) with symlinks in `/usr/local/bin`; whisper/sd/audio.cpp binaries are static. Exact versions of everything — every commit, every merged PR, the glslc used and the enabled build options — are recorded in `/versions.txt` inside the image.
 
 ## Runtime layout
