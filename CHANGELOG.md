@@ -4,6 +4,19 @@ The image has no version numbers: every push and the scheduled rebuild publish
 from the then-current upstream branches, so changes are grouped by date. Newest
 first. The exact revisions inside any given image are in its `/versions.txt`.
 
+## 2026-10-11
+
+- **`--moe-cache-mib` in every llama.cpp build** (upstream #29887): with
+  `--cpu-moe` or `--n-cpu-moe`, a GPU cache of N MiB holds the most-used
+  experts. On Vulkan, upstream aborts at startup once one cache bank grows
+  past 4 GiB (on Qwen3.6-35B-A3B, above about 11000 MiB). The `-rdna` binaries
+  cap the cache at that limit and print a warning instead; for the stock
+  `llama-server`, stay below it.
+- **`-rdna` binaries: `GGML_VK_FA_QTOK_FOLD=1`** turns on the flash-attention
+  verify fold from upstream WIP PR #30190. It only fires for GQA ratio 6 with
+  speculative decoding (e.g. Qwen3.8-27B with MTP), and gives about +26 %
+  decode at 100k context on a 7900 XTX.
+
 ## 2026-10-10
 
 - **`exl3-server`: DFlash2 no longer crashes at `--max-batch-size` above 1.**
