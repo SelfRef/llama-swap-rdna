@@ -16,8 +16,8 @@ Both llama.cpp backends are built with runtime CPU dispatch (`GGML_CPU_ALL_VARIA
 | Engine | Vulkan (all tags) | ROCm (`:full`/`:latest` only) |
 |---|---|---|
 | [llama-swap](https://github.com/mostlygeek/llama-swap) `main` + PRs (`LLAMA_SWAP_PATCHES`) | `llama-swap` (UI embedded), `vllm-wrapper` | (backend-independent) |
-| [llama.cpp](https://github.com/ggml-org/llama.cpp) master + PRs (`LLAMA_PATCHES`) | `llama-server`, `llama-cli`, `llama-tts`, `llama-bench` | `llama-server-rocm`, `llama-cli-rocm`, `llama-tts-rocm`, `llama-bench-rocm` |
 | [llama.cpp-rdna](https://github.com/SelfRef/llama.cpp-rdna) (llama.cpp fork: upstream master + ROCmFPx + RDNA3 patches) | `llama-server-rdna`, `llama-cli-rdna`, `llama-bench-rdna`, `llama-quantize-rdna`, `llama-perplexity-rdna` | — (Vulkan-only) |
+| [llama.cpp](https://github.com/ggml-org/llama.cpp) master + PRs (`LLAMA_PATCHES`) | `llama-server`, `llama-cli`, `llama-tts`, `llama-bench` | `llama-server-rocm`, `llama-cli-rocm`, `llama-tts-rocm`, `llama-bench-rocm` |
 | [exllamav3-rocm](https://github.com/phoenixhaxor/exllamav3-rocm) + [TabbyAPI](https://github.com/theroyallab/tabbyAPI) (PyTorch venv, `/opt/exl3`) | — (HIP-only) | `exl3-server` (gfx1100 only) |
 | [whisper.cpp](https://github.com/ggml-org/whisper.cpp) master | `whisper-server`, `whisper-cli` | `whisper-server-rocm`, `whisper-cli-rocm` |
 | [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp) master | `sd-server` (web UI embedded), `sd-cli` | `sd-server-rocm` (web UI embedded), `sd-cli-rocm` |
@@ -134,17 +134,15 @@ cmd: >
     --jinja --chat-template-file /etc/llama-swap/templates/qwen-fixed.jinja
 ```
 
-## exllamav3 for RDNA3
+## Reference setup: Qwen3.8-27B on an RX 7900 XTX
 
-The `:full` tag ships [phoenixhaxor/exllamav3-rocm](https://github.com/phoenixhaxor/exllamav3-rocm) — [exllamav3](https://github.com/turboderp-org/exllamav3) with its EXL3 matmul, decode/verify attention and Gated DeltaNet kernels rewritten for RDNA3 (wave32, WMMA) — served by the fork's pinned, patched [TabbyAPI](https://github.com/theroyallab/tabbyAPI): OpenAI-compatible API with streaming, tool calls, images and reasoning, plus **DFlash2** (block-diffusion draft model) or **MTP** speculative decoding. It is a PyTorch (ROCm 7.2 wheels) venv under `/opt/exl3`, launched as `exl3-server`; PyTorch brings its own HIP libraries, and the image keeps only their gfx1100 kernels. Triton JIT-compiles parts of prefill at runtime, which is why `:full` also carries `gcc` and the Python headers.
+The two fastest ways this image runs Qwen3.8-27B on one RX 7900 XTX (24 GB), as llama-swap entries. Both use the bundled `qwen-sharp` template, take text and images, call tools and think. Run one of them per card: each fills most of the VRAM.
 
-**gfx1100 (RX 7900 XTX / 7900 XT / W7900) only.** On anything else use the llama.cpp builds.
-
-Every TabbyAPI config key is also a flag (`exl3-server --help`), so a llama-swap entry needs no config file. The image's Qwen templates are available as `--prompt-template qwen-fixed` / `qwen-sharp`. Example for Qwen3.8-27B ([EXL3 3.5 bpw](https://huggingface.co/Mia-AiLab/Qwen3.8-27B-EXL3-3.5bpw) + [DFlash2 draft](https://huggingface.co/Mia-AiLab/Qwen3.8-27B-DFlash2-EXL3-5.0bpw), both downloaded into one directory):
+**exllamav3 + DFlash2** (`:full` only): the faster of the two. [EXL3 3.5 bpw](https://huggingface.co/Mia-AiLab/Qwen3.8-27B-EXL3-3.5bpw) + [DFlash2 draft](https://huggingface.co/Mia-AiLab/Qwen3.8-27B-DFlash2-EXL3-5.0bpw), both downloaded into one directory. 192k context, one request generated at a time (others queue), ~22.5 GB VRAM, about 16 GB of host RAM for the prompt cache once it fills.
 
 ```yaml
-qwen38-exl3:
-  env: ["HIP_VISIBLE_DEVICES=0"]   # the gfx1100 card; ROCm indices can differ from Vulkan ones, check rocminfo
+qwen3.8-27b-exl3:
+  env: ["HIP_VISIBLE_DEVICES=0"]   # the 7900 XTX in ROCm order, which can differ from Vulkan's: check rocminfo
   checkEndpoint: /health
   cmd: >
     exl3-server --host 127.0.0.1 --port ${PORT} --disable-auth true
@@ -153,13 +151,74 @@ qwen38-exl3:
       --chunk-size 2048 --max-batch-size 1
       --vision true --vision-offload true
       --reasoning true --reasoning-start-token "<think>" --reasoning-end-token "</think>"
-      --tool-format qwen3_coder --prompt-template qwen-fixed
+      --tool-format qwen3_coder --prompt-template qwen-sharp
       --draft-mode model --draft-model-dir /models/exl3
       --draft-model-name Qwen3.8-27B-DFlash2-EXL3-5.0bpw --draft-cache-mode Q4
       --sysmem-recurrent-cache 4096
+      --sysmem-kv-cache 16384
 ```
 
-That is the fork's `config.dflash2-192k.yml` as flags (~23.6 GB VRAM). For the full 262,144 context use `--draft-mode mtp --draft-cache-mode Q8` (the MTP head is inside the main model) and drop the draft model flags. The container needs `/dev/kfd` as well as the render node.
+- `--sysmem-kv-cache 16384` is a second prompt-cache tier in system RAM (default 0). Without it, a conversation that other prompts push out of the 192k VRAM cache is prefilled again from scratch on its next turn. With it, it comes back from RAM: a 26k-token agent turn after 217k tokens of other prompts took 7.8 s instead of 22.5 s. Nothing else changes.
+- `--recurrent-checkpoint-interval` (default 2048) is fine as it is. A client that drops earlier reasoning from the history already costs nothing measurable; 512 gave no gain.
+- Set llama-swap's `healthCheckTimeout` to 300 or more: loading takes about 2 minutes.
+
+**llama.cpp, `llama-server-rdna` + ROCmFP4-FAST + MTP** (both tags): loads in seconds, serves two requests at once, works on the `:vulkan` tag. [julianmb ROCmFP4-FAST](https://huggingface.co/julianmb/Qwen-3.8-27B-ROCmFP4-FAST-GGUF) with its baked MTP head, 131k context shared by 2 slots, ~22 GB VRAM.
+
+```yaml
+qwen3.8-27b-fp4:
+  # GGML_VK_VISIBLE_DEVICES: the 7900 XTX in Vulkan order (llama-server-rdna --list-devices).
+  # GGML_VK_NO_CM1_MMQ=1: the coopmat1 int8 matmul is 30-37 % slower on prefill for the FP4 types.
+  # GGML_VK_FA_QTOK_FOLD=1: the flash-attention verify fold, +26 % decode at a 100k-token depth.
+  env: ["GGML_VK_VISIBLE_DEVICES=0", "GGML_VK_NO_CM1_MMQ=1", "GGML_VK_FA_QTOK_FOLD=1"]
+  cmd: >
+    llama-server-rdna --host 0.0.0.0 --port ${PORT}
+      -hf julianmb/Qwen-3.8-27B-ROCmFP4-FAST-GGUF:FAST
+      --mmproj-url https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/mmproj-F16.gguf
+      --spec-type draft-mtp --spec-draft-n-max 4
+      --n-gpu-layers all --flash-attn on --fit off
+      --ctx-size 131072 --cache-type-k f16 --cache-type-v q4_0
+      --batch-size 2048 --ubatch-size 512 --image-min-tokens 1024
+      --parallel 2 --kv-unified --cache-idle-slots
+      --cache-ram 16384 --ctx-checkpoints 64 --checkpoint-min-step 512
+      --reasoning-preserve --reasoning auto --reasoning-format deepseek
+      --jinja --chat-template-file /etc/llama-swap/templates/qwen-sharp.jinja
+      --sleep-idle-seconds 600
+```
+
+- `--spec-draft-n-max 4` beat 3 by 9-15 % and 5-6 by ~11 % on this model (see [The RDNA fork](#the-rdna-fork)).
+- `--cache-ram` and `--ctx-checkpoints` do here what `--sysmem-kv-cache` does for exllamav3: an earlier conversation comes back from RAM instead of being prefilled again.
+- f16 K / q4_0 V is the KV mix that fits 131k next to the vision projector. f16 V as well adds ~3 % prefill but only fits ~98k.
+
+Measured on an RX 7900 XTX (Ryzen 9 5950X, PCIe 4.0, ReBAR), greedy, one stream at a time, client-side timing. Decode and prefill in tokens/s:
+
+| | exllamav3 + DFlash2 | llama.cpp ROCmFP4 + MTP |
+|---|---|---|
+| prose decode | **77.5** | 67.7 |
+| JSON decode | **174.8** | 117.5 |
+| code-edit decode | **221.7** | 132.7 |
+| reasoning decode | **153.3** | 110.0 |
+| decode after an 8k prompt | 79.0 | **80.0** |
+| prefill 8k / 30k | **1233 / 1147** | 947 / 845 |
+
+An agent loop, replayed: a ~9.5k-token system prompt, then turns that each append the model's reply and a tool result, thinking at low effort. Time to the first token per turn, in seconds:
+
+| turn | exllamav3 + DFlash2 | llama.cpp ROCmFP4 + MTP |
+|---|---|---|
+| first turn (~9.5k tokens, nothing cached) | **7.6-8.1** | 9.7-10.7 |
+| next turn (~1.6k new tokens), reasoning sent back or dropped | **1.7-2.1** | 1.9-2.4 |
+| two conversations taking turns | **2.0-2.3** | 2.4-3.1 |
+| next turn with ~5.6k new tokens | **5.3-6.0** | 7.1-8.2 |
+| 26k-token turn after 217k tokens of other prompts | **7.8** (22.5 without `--sysmem-kv-cache`) | 8.9 |
+
+Quality of the two is a tie (gsm8k, humaneval, ifeval, thinking on in both, paired test p = 0.29). Use exllamav3 for the speed if one client at a time is enough; use llama.cpp when you need two parallel requests, fast model swaps, or a card other than gfx1100.
+
+## exllamav3 for RDNA3
+
+The `:full` tag ships [phoenixhaxor/exllamav3-rocm](https://github.com/phoenixhaxor/exllamav3-rocm) — [exllamav3](https://github.com/turboderp-org/exllamav3) with its EXL3 matmul, decode/verify attention and Gated DeltaNet kernels rewritten for RDNA3 (wave32, WMMA) — served by the fork's pinned, patched [TabbyAPI](https://github.com/theroyallab/tabbyAPI): OpenAI-compatible API with streaming, tool calls, images and reasoning, plus **DFlash2** (block-diffusion draft model) or **MTP** speculative decoding. It is a PyTorch (ROCm 7.2 wheels) venv under `/opt/exl3`, launched as `exl3-server`; PyTorch brings its own HIP libraries, and the image keeps only their gfx1100 kernels. Triton JIT-compiles parts of prefill at runtime, which is why `:full` also carries `gcc` and the Python headers.
+
+**gfx1100 (RX 7900 XTX / 7900 XT / W7900) only.** On anything else use the llama.cpp builds.
+
+Every TabbyAPI config key is also a flag (`exl3-server --help`), so a llama-swap entry needs no config file. The image's Qwen templates are available as `--prompt-template qwen-fixed` / `qwen-sharp`. A complete entry for Qwen3.8-27B is in [Reference setup: Qwen3.8-27B on an RX 7900 XTX](#reference-setup-qwen38-27b-on-an-rx-7900-xtx). For the full 262,144 context use `--draft-mode mtp --draft-cache-mode Q8` (the MTP head is inside the main model) and drop the draft model flags. The container needs `/dev/kfd` as well as the render node.
 
 Notes for running it as a served entry rather than a benchmark:
 
@@ -168,16 +227,7 @@ Notes for running it as a served entry rather than a benchmark:
 - Loading takes about 2 minutes, longer than llama-swap's default 120 s `healthCheckTimeout`; set it to 300 or more. `/health` returns 200 once the model is loaded (TabbyAPI loads the model before it opens the port).
 - If the load dies with `Memory access fault by GPU … Page not present` (seen on some 7900 XTX systems, see [exllamav3-rocm#1](https://github.com/phoenixhaxor/exllamav3-rocm/issues/1)), add `EXL3_EXPANDABLE_SEGMENTS=0` to the entry's `env`. That turns off PyTorch's expandable-segments allocator, which exllamav3 enables by default.
 
-Measured on an RX 7900 XTX against this image's best llama.cpp path for the same model (`llama-server-rdna`, ROCmFP4-FAST + MTP n4), same chat template (`qwen-sharp`), greedy, single stream, client-side timing (t/s, exl3 vs llama.cpp):
-
-| | DFlash2, 192k | MTP, 256k | llama.cpp |
-|---|---|---|---|
-| prose decode | **77.5** | 66.7 | 67.7 |
-| JSON decode | **174.8** | 127.1 | 117.5 |
-| code-edit decode | **221.7** | 140.2 | 132.7 |
-| reasoning decode | **153.3** | 110.1 | 110.0 |
-| decode after an 8k prompt | 79.0 | 69.9 | **80.0** |
-| prefill 8k / 30k | 1233 / 1147 | **1243 / 1166** | 947 / 845 |
+MTP mode instead of DFlash2, same card (t/s): prose 66.7, JSON 127.1, code-edit 140.2, reasoning 110.1, decode after an 8k prompt 69.9, prefill 8k / 30k 1243 / 1166. DFlash2 numbers and llama.cpp next to them are in the [reference setup](#reference-setup-qwen38-27b-on-an-rx-7900-xtx).
 
 DFlash2 is the mode to use; MTP only buys the longer context. Both use ~24 GB of the card. The built commits are recorded in `/versions.txt` as `exl3_commit:` / `exl3_tabbyapi_commit:`.
 

@@ -4,6 +4,16 @@ The image has no version numbers: every push and the scheduled rebuild publish
 from the then-current upstream branches, so changes are grouped by date. Newest
 first. The exact revisions inside any given image are in its `/versions.txt`.
 
+## 2026-10-13
+
+- **README: reference setup for Qwen3.8-27B on an RX 7900 XTX**, with complete
+  llama-swap entries for exllamav3 + DFlash2 and for `llama-server-rdna` +
+  ROCmFP4-FAST + MTP, their decode/prefill numbers and an agent-loop
+  time-to-first-token comparison.
+- **exllamav3: add `--sysmem-kv-cache 16384`** to a long-running entry. It keeps
+  prompts evicted from the VRAM cache in system RAM: a 26k-token agent turn
+  after 217k tokens of other prompts took 7.8 s instead of 22.5 s.
+
 ## 2026-10-11
 
 - **`--moe-cache-mib` in every llama.cpp build** (upstream #29887): with
