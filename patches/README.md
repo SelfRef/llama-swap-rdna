@@ -12,6 +12,16 @@ diff against the tree that has ALL the other `LLAMA_PATCHES` merges in it --
 these patches are applied last, so a diff taken against plain master fails on
 any file a later PR also touches.
 
+## 25592-rebased.patch
+
+Upstream PR #25592 (server: exact-position checkpoint restore for hybrid/recurrent
+models), rebased on 2026-10-20 onto master `84e66d032` + `30283`. Master's #30666
+rewrote the same checkpoint-invalidation block: it now erases a checkpoint that covers
+tokens not shared with the new prompt (`n_tokens > n_prefix`). The patch keeps both
+rules -- a checkpoint goes if either says so -- which can only cost a reuse, never keep
+a stale state. The rest of the PR is untouched. Delete it and put `25592` back in
+`LLAMA_PATCHES` once the author rebases.
+
 ## 25666-rebased.patch
 
 Upstream PR #25666 (Vulkan: do not enable MMVQ for speculative-decode steps on

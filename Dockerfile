@@ -189,11 +189,7 @@ ARG LLAMA_COMMIT="master"
 # One tree for both backends since 2026-09-06 (none of the PRs touches
 # CUDA/HIP sources, so the ROCm build takes the same tree).
 #
-# Current set, revised 2026-10-05 against master e117148a4:
-#   #28265 keep the Qwen3.5-family delta-net out-proj 2D (Strix Halo: +6-9 %
-#          TG at batch 4-8, i.e. --parallel 2 plus MTP verify batches)
-#   #25592 exact-position checkpoint restore for hybrid/recurrent models
-#          (agentic multi-turn @130k: 35 s -> 1.3 s turn restore)
+# Current set, revised 2026-10-20 against master 84e66d032:
 #   #30283 bound the A side of the int8 coopmat1 matmul (RDNA3/4) to end_k
 #          like the B side: the load is clamped in bounds and a k step past
 #          end_k writes a zero A scale. Without it a row whose K is not a
@@ -201,8 +197,10 @@ ARG LLAMA_COMMIT="master"
 #          scale). Added 2026-10-10, zero fill after review the same day;
 #          pp2048 -0.5..-1.0 %, decode flat. The llama.cpp-rdna binaries
 #          carry the same change.
-# plus two PRs carried as rebased patches because they no longer merge as-is
-# (see patches/README.md): #25666 (no MMVQ for speculative-decode steps on
+# plus three PRs carried as rebased patches because they no longer merge as-is
+# (see patches/README.md): #25592 (exact-position checkpoint restore for
+# hybrid/recurrent models; agentic multi-turn @130k: 35 s -> 1.3 s turn
+# restore), #25666 (no MMVQ for speculative-decode steps on
 # AMD; only gfx1151 numbers exist upstream -- delete it if a discrete-GPU
 # benchmark shows no gain) and #28333 (zero the MTP carrier at sequence start).
 #
@@ -212,7 +210,8 @@ ARG LLAMA_COMMIT="master"
 #   UD-Q4_K_XL output on RDNA3 when tested on 09-09 -- check the text, not
 #   only t/s, on IQ4_XS-bearing quants), #28024, #27220, #28253, #28068,
 #   #28457, #28330, #28901, #28956, #28876.
-# Retired, superseded or closed: #28243 (-> #29761 Qwen4Exp MTP), #28927
+# Retired, superseded or closed: #28265 (-> #30823, the same 2D reshape of the
+#   Qwen3.5-family delta-net output, merged 2026-10-20), #28243 (-> #29761 Qwen4Exp MTP), #28927
 #   (-> #28751), #28213 (master's sparse FA and k-pool cache match it),
 #   #28943 (closed without merge).
 # Dropped because they no longer merge: #28699 (master's own k-pool cache
@@ -238,7 +237,7 @@ ARG LLAMA_COMMIT="master"
 # backends -- so a patch has to be generated against the tree with ALL the
 # other merges in it, not just against master (see patches/README.md).
 # Retire PRs from the list as they merge (the build says so).
-ARG LLAMA_PATCHES="28265 25592 30283"
+ARG LLAMA_PATCHES="30283"
 
 # Cache key only (see LLAMA_SWAP_PATCHES_HEADS).
 ARG LLAMA_PATCHES_HEADS=""
