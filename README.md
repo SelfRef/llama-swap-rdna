@@ -7,7 +7,7 @@ The [llama-swap](https://github.com/mostlygeek/llama-swap) `unified-vulkan` imag
 - **Vulkan** (Mesa RADV) — works on practically any AMD GPU, including RDNA1/2, iGPUs/APUs and anything ROCm doesn't cover. Built with a modern shader compiler (see [Why build the Vulkan binaries ourselves](#why-build-the-vulkan-binaries-ourselves)) and shipped with a **current Mesa/RADV** instead of Ubuntu 24.04's.
 - **ROCm 7.14** (HIP) — the full ROCm userspace runtime (HIP, rocBLAS/hipBLAS, hipBLASLt, `rocminfo`) plus HIP builds of the engines, with flash-attention kernels for every KV-cache quant. ROCm comes from AMD's per-gfx `packages-multi-arch` repository (`ROCM_CHANNEL=multiarch`), so the image carries BLAS kernels only for the gfx targets it is built for instead of ~6 GB of all-arch Tensile blobs; the classic `repo.radeon.com` channel (tops out at ROCm 7.2.4, which still has the HIP-graphs bug fixed in 7.13) remains available as `ROCM_CHANNEL=classic`.
 - **llama.cpp-rdna** (Vulkan, all tags) — [SelfRef/llama.cpp-rdna](https://github.com/SelfRef/llama.cpp-rdna) as a third `llama.cpp` install (`*-rdna` binaries): current upstream master **and** the ROCmFPx formats in one tree, plus measured RDNA3/RDNA3.5 Vulkan patches that were never upstreamed. See [The RDNA3 fork](#the-rdna-fork).
-- **exllamav3 for RDNA3** (HIP, `:full` tag, gfx1100 only) — [phoenixhaxor/exllamav3-rocm](https://github.com/phoenixhaxor/exllamav3-rocm) with [TabbyAPI](https://github.com/theroyallab/tabbyAPI) as `exl3-server`: EXL3 quants with DFlash2 or MTP speculative decoding. Not a llama.cpp. See [exllamav3 for RDNA3](#exllamav3-for-rdna3).
+- **exllamav3 for RDNA3** (HIP, `:full` tag, gfx1100 only) — [SelfRef/exllamav3-rdna](https://github.com/SelfRef/exllamav3-rdna) (upstream exllamav3 + RDNA3 kernels) with [TabbyAPI](https://github.com/theroyallab/tabbyAPI) as `exl3-server`: EXL3 quants with DFlash2 or MTP speculative decoding. Not a llama.cpp. See [exllamav3 for RDNA3](#exllamav3-for-rdna3).
 
 Both llama.cpp backends are built with runtime CPU dispatch (`GGML_CPU_ALL_VARIANTS`), so one image gets AVX2 on Zen 3 and AVX-512/VNNI/BF16 on Zen 4/5 for CPU-offloaded layers. Every engine is built once per backend from one resolved commit, so each ships as a matched Vulkan/ROCm pair — pick the backend per model in your llama-swap config.
 
@@ -18,7 +18,7 @@ Both llama.cpp backends are built with runtime CPU dispatch (`GGML_CPU_ALL_VARIA
 | [llama-swap](https://github.com/mostlygeek/llama-swap) `main` + PRs (`LLAMA_SWAP_PATCHES`) | `llama-swap` (UI embedded), `vllm-wrapper` | (backend-independent) |
 | [llama.cpp-rdna](https://github.com/SelfRef/llama.cpp-rdna) (llama.cpp fork: upstream master + ROCmFPx + RDNA3 patches) | `llama-server-rdna`, `llama-cli-rdna`, `llama-bench-rdna`, `llama-quantize-rdna`, `llama-perplexity-rdna` | — (Vulkan-only) |
 | [llama.cpp](https://github.com/ggml-org/llama.cpp) master + PRs (`LLAMA_PATCHES`) | `llama-server`, `llama-cli`, `llama-tts`, `llama-bench` | `llama-server-rocm`, `llama-cli-rocm`, `llama-tts-rocm`, `llama-bench-rocm` |
-| [exllamav3-rocm](https://github.com/phoenixhaxor/exllamav3-rocm) + [TabbyAPI](https://github.com/theroyallab/tabbyAPI) (PyTorch venv, `/opt/exl3`) | — (HIP-only) | `exl3-server` (gfx1100 only) |
+| [exllamav3-rdna](https://github.com/SelfRef/exllamav3-rdna) + [TabbyAPI](https://github.com/theroyallab/tabbyAPI) (PyTorch venv, `/opt/exl3`) | — (HIP-only) | `exl3-server` (gfx1100 only) |
 | [whisper.cpp](https://github.com/ggml-org/whisper.cpp) master | `whisper-server`, `whisper-cli` | `whisper-server-rocm`, `whisper-cli-rocm` |
 | [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp) master | `sd-server` (web UI embedded), `sd-cli` | `sd-server-rocm` (web UI embedded), `sd-cli-rocm` |
 | [audio.cpp](https://github.com/0xShug0/audio.cpp) main | `audiocpp_server`, `audiocpp_cli`, `audiocpp_gguf` (GGUF converter, upstream ships none) | — (no HIP backend upstream) |
@@ -60,7 +60,7 @@ docker pull ghcr.io/selfref/llama-swap-rdna:full     # Vulkan + ROCm
 docker pull ghcr.io/selfref/llama-swap-rdna:latest   # alias for :full
 ```
 
-Both tags are rebuilt on every push and every 3 days by the scheduled run, each time from the then-current default branches of llama-swap, llama.cpp, whisper.cpp, stable-diffusion.cpp, audio.cpp, llama.cpp-rdna and exllamav3-rocm and the current heads of the merged PRs. The ROCm stages are fat multi-gfx HIP builds that take hours of runner time, so on a PR or an ad-hoc run they only happen if you ask for them (Actions → Build image → Run workflow → tick **rocm**). The `*-rocm` binaries, `exl3-server` (see [exllamav3 for RDNA3](#exllamav3-for-rdna3)), the ROCm runtime and `rocminfo` exist only in `:full`/`:latest`.
+Both tags are rebuilt on every push and every 3 days by the scheduled run, each time from the then-current default branches of llama-swap, llama.cpp, whisper.cpp, stable-diffusion.cpp, audio.cpp, llama.cpp-rdna, exllamav3-rdna and TabbyAPI and the current heads of the merged PRs. The ROCm stages are fat multi-gfx HIP builds that take hours of runner time, so on a PR or an ad-hoc run they only happen if you ask for them (Actions → Build image → Run workflow → tick **rocm**). The `*-rocm` binaries, `exl3-server` (see [exllamav3 for RDNA3](#exllamav3-for-rdna3)), the ROCm runtime and `rocminfo` exist only in `:full`/`:latest`.
 
 Or build locally (expect a couple of hours for the fat HIP builds; `WITH_ROCM=false` for the Vulkan-only image in well under an hour):
 
@@ -101,9 +101,11 @@ Build args:
 - `RDNA_REPO` / `RDNA_BRANCH` / `RDNA_COMMIT` — default SelfRef's repo, `rdna`, *(empty)*  
   Fork source. **Always pin `RDNA_COMMIT` to a full 40-character sha** (`scripts/resolve-refs.sh` does): the clone's cache key is the arg values, so passing only the branch silently reuses the binary from whatever the branch pointed at last time, and GitHub rejects an abbreviated sha.
 - `WITH_EXL3` — default `true`  
-  Build [exllamav3-rocm](https://github.com/phoenixhaxor/exllamav3-rocm) + TabbyAPI as `exl3-server`. Only takes effect together with `WITH_ROCM=true`: it is a HIP engine and adds ~8 GB of PyTorch, so `:vulkan` never contains it. `false` skips the stage.
-- `EXL3_REPO` / `EXL3_BRANCH` / `EXL3_COMMIT` — default phoenixhaxor's repo, `main`, *(empty)*  
-  Fork source; pin `EXL3_COMMIT` to a full sha like the other forks (`scripts/resolve-refs.sh` does). The TabbyAPI revision is the one the fork's own installer pins.
+  Build [exllamav3-rdna](https://github.com/SelfRef/exllamav3-rdna) + TabbyAPI as `exl3-server`. Only takes effect together with `WITH_ROCM=true`: it is a HIP engine and adds ~8 GB of PyTorch, so `:vulkan` never contains it. `false` skips the stage.
+- `EXL3_REPO` / `EXL3_BRANCH` / `EXL3_COMMIT` — default SelfRef/exllamav3-rdna, `rdna`, *(empty)*  
+  exllamav3 source; pin `EXL3_COMMIT` to a full sha like the other forks (`scripts/resolve-refs.sh` does). Upstream `turboderp-org/exllamav3` @ `master` builds too (its own ROCm backend, slower decode on gfx1100).
+- `TABBY_REPO` / `TABBY_BRANCH` / `TABBY_COMMIT` — default theroyallab/tabbyAPI, `main`, *(empty)*  
+  TabbyAPI source, pinned the same way. Upstream TabbyAPI runs on ROCm unpatched.
 - `MESA_PPA` — default `ppa:kisak/kisak-mesa`  
   Newer Mesa/RADV for the final image; `""` keeps Ubuntu 24.04's stock Mesa 25.2
 - `QWEN_TEMPLATE_URL` — default froggeric's `chat_template.jinja`  
@@ -191,6 +193,8 @@ qwen3.8-27b-fp4:
 
 Measured on an RX 7900 XTX (Ryzen 9 5950X, PCIe 4.0, ReBAR), greedy, one stream at a time, client-side timing. Decode and prefill in tokens/s:
 
+The exllamav3 columns below were measured on the earlier exllamav3-rocm build (2026-10-07/13). The current exllamav3-rdna build decodes on par with it (+2-3 % where both produce the same text), prefills 7 % faster, answers short prompts sooner and uses ~2 GB less VRAM; its numbers are in the [exllamav3-rdna README](https://github.com/SelfRef/exllamav3-rdna#measured).
+
 | | exllamav3 + DFlash2 | llama.cpp ROCmFP4 + MTP |
 |---|---|---|
 | prose decode | **77.5** | 67.7 |
@@ -214,7 +218,7 @@ Quality of the two is a tie (gsm8k, humaneval, ifeval, thinking on in both, pair
 
 ## exllamav3 for RDNA3
 
-The `:full` tag ships [phoenixhaxor/exllamav3-rocm](https://github.com/phoenixhaxor/exllamav3-rocm) — [exllamav3](https://github.com/turboderp-org/exllamav3) with its EXL3 matmul, decode/verify attention and Gated DeltaNet kernels rewritten for RDNA3 (wave32, WMMA) — served by the fork's pinned, patched [TabbyAPI](https://github.com/theroyallab/tabbyAPI): OpenAI-compatible API with streaming, tool calls, images and reasoning, plus **DFlash2** (block-diffusion draft model) or **MTP** speculative decoding. It is a PyTorch (ROCm 7.2 wheels) venv under `/opt/exl3`, launched as `exl3-server`; PyTorch brings its own HIP libraries, and the image keeps only their gfx1100 kernels. Triton JIT-compiles parts of prefill at runtime, which is why `:full` also carries `gcc` and the Python headers.
+The `:full` tag ships [SelfRef/exllamav3-rdna](https://github.com/SelfRef/exllamav3-rdna) — current upstream [exllamav3](https://github.com/turboderp-org/exllamav3) (which has its own ROCm backend since v1.6.0) plus the RDNA3 matmul, bundled-projection and decode/verify-attention kernels of [phoenixhaxor/exllamav3-rocm](https://github.com/phoenixhaxor/exllamav3-rocm), the port this image shipped until 2026-10-21 — served by upstream [TabbyAPI](https://github.com/theroyallab/tabbyAPI): OpenAI-compatible API with streaming, tool calls, images and reasoning, plus **DFlash2** (block-diffusion draft model) or **MTP** speculative decoding. It is a PyTorch (ROCm 7.2 wheels) venv under `/opt/exl3`, launched as `exl3-server`; PyTorch brings its own HIP libraries, and the image keeps only their gfx1100 kernels. Triton JIT-compiles parts of prefill at runtime, which is why `:full` also carries `gcc` and the Python headers.
 
 **gfx1100 (RX 7900 XTX / 7900 XT / W7900) only.** On anything else use the llama.cpp builds.
 
@@ -223,13 +227,14 @@ Every TabbyAPI config key is also a flag (`exl3-server --help`), so a llama-swap
 Notes for running it as a served entry rather than a benchmark:
 
 - **`--max-batch-size` is the number of requests generated at once, not a limit on clients.** Requests beyond it wait in exllamav3's queue and are answered in order. `--cache-size` is one page pool that all running jobs share; it is not split per slot. A job only waits if the pool is out of free pages. On Qwen3.8-27B (recurrent layers) each extra slot costs about 1.1 GB of VRAM: with this example, batch 2 needs 23.6 GB instead of 22.5 GB on a 24 GB card and finished 4 concurrent requests 28 % sooner. Batch 3 or more needs a smaller `--cache-size`.
-- **Batch sizes above 1 need the 2026-10-10 image or newer.** Before that, the DFlash2 draft crashed as soon as two jobs ran together, aborting every running request with HTTP 503 (fixed upstream in exllamav3 `575279513`; the image patches the fork until it syncs).
+- **Batch sizes above 1 need the 2026-10-10 image or newer.** Before that, the DFlash2 draft crashed as soon as two jobs ran together, aborting every running request with HTTP 503 (fixed upstream in exllamav3 `575279513`, which the image has carried since).
+- **Since 2026-10-21 the entry uses ~2 GB less VRAM than before** (22.6 instead of 24.4 GB with the reference flags): upstream's lighter DFlash/DeltaNet draft state. A Q8 cache at 196k that used to run out of memory under load may fit again.
 - Loading takes about 2 minutes, longer than llama-swap's default 120 s `healthCheckTimeout`; set it to 300 or more. `/health` returns 200 once the model is loaded (TabbyAPI loads the model before it opens the port).
-- If the load dies with `Memory access fault by GPU … Page not present` (seen on some 7900 XTX systems, so far only reported with ReBAR off; see [exllamav3-rocm#1](https://github.com/phoenixhaxor/exllamav3-rocm/issues/1)), add `EXL3_EXPANDABLE_SEGMENTS=0` to the entry's `env`. That turns off PyTorch's expandable-segments allocator, which exllamav3 enables by default.
+- If the load dies with `Memory access fault by GPU … Page not present` (seen on some 7900 XTX systems, so far only reported with ReBAR off; first reported against the earlier exllamav3-rocm build in [exllamav3-rocm#1](https://github.com/phoenixhaxor/exllamav3-rocm/issues/1)), add `EXL3_EXPANDABLE_SEGMENTS=0` to the entry's `env`. That turns off PyTorch's expandable-segments allocator, which exllamav3 enables by default.
 
-MTP mode instead of DFlash2, same card (t/s): prose 66.7, JSON 127.1, code-edit 140.2, reasoning 110.1, decode after an 8k prompt 69.9, prefill 8k / 30k 1243 / 1166. DFlash2 numbers and llama.cpp next to them are in the [reference setup](#reference-setup-qwen38-27b-on-an-rx-7900-xtx).
+MTP mode instead of DFlash2, same card (t/s): prose 62.7, JSON 127.5, code-edit 139.5, reasoning 110.6, decode after an 8k prompt 71.6, prefill 8k / 30k 1335 / 1018 (the earlier exllamav3-rocm build prefilled 30k at 1166 in this mode), ~21.4 GB. DFlash2 numbers and llama.cpp next to them are in the [reference setup](#reference-setup-qwen38-27b-on-an-rx-7900-xtx).
 
-DFlash2 is the mode to use; MTP only buys the longer context. Both use ~24 GB of the card. The built commits are recorded in `/versions.txt` as `exl3_commit:` / `exl3_tabbyapi_commit:`.
+DFlash2 is the mode to use; MTP only buys the longer context. The built commits are recorded in `/versions.txt` as `exl3_commit:` / `exl3_tabbyapi_commit:`.
 
 ## The RDNA fork
 

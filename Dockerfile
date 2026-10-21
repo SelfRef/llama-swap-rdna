@@ -26,7 +26,7 @@
 #     draft sizing on current upstream master, plus unupstreamed RDNA3/RDNA3.5
 #     Vulkan patches
 #     measured on gfx1100/1101/1151 -- see the WITH_RDNA arg below
-#   - exllamav3-rocm (exllamav3 with RDNA3 kernels) + TabbyAPI in a PyTorch
+#   - SelfRef/exllamav3-rdna (upstream exllamav3 + RDNA3 kernels) + TabbyAPI in a PyTorch
 #     venv under /opt/exl3, launched as `exl3-server` (gfx1100 only, :full
 #     only) -- see the WITH_EXL3 arg below
 #   - Vulkan builds of llama.cpp, whisper.cpp, sd.cpp and audio.cpp with a
@@ -321,25 +321,29 @@ ARG RDNA_BRANCH=rdna
 ARG RDNA_COMMIT=""
 
 # ── exllamav3 for RDNA3 (TabbyAPI) ─────────────────────────────────────
-# phoenixhaxor/exllamav3-rocm: exllamav3 with its EXL3 matmul, decode/verify
-# attention and Gated DeltaNet kernels rewritten for RDNA3 (wave32, WMMA),
-# served by TabbyAPI (OpenAI API: streaming, tools, images, reasoning) with
-# DFlash2 or MTP speculative decoding. Not a llama.cpp: a PyTorch (ROCm wheels)
+# SelfRef/exllamav3-rdna: upstream exllamav3 (its own ROCm backend since v1.6.0)
+# plus the RDNA3 matmul, bundled-projection and decode-attention kernels of
+# phoenixhaxor/exllamav3-rocm, which this image used before and which no longer
+# moves. On a 7900 XTX: that port's decode speed, 7 % faster prefill, shorter
+# time to first token, ~2 GB less VRAM (its README has the numbers). Served by
+# upstream TabbyAPI
+# (OpenAI API: streaming, tools, images, reasoning) with DFlash2 or MTP
+# speculative decoding. Not a llama.cpp: a PyTorch (ROCm wheels)
 # venv in /opt/exl3 with an `exl3-server` launcher, so a llama-swap entry runs
 # it like any other server (`exl3-server --port ${PORT} --model-dir ...`).
-# Measured on an RX 7900 XTX with Qwen3.8-27B EXL3 3.5 bpw + DFlash2 draft vs
-# llama.cpp ROCmFP4 + MTP, same chat template: decode +14 % prose, +49 % JSON,
-# +67 % code, equal at 8k depth; prefill +30-36 % (README has the table).
-# gfx1100 ONLY (the fork's kernels are wave32/RDNA3 and validated on the XTX),
-# so EXL3_TARGETS is not a list. Only with WITH_ROCM=true AND WITH_EXL3=true:
+# Built for gfx1100 ONLY (the one card it is benchmarked on; README has the
+# numbers), so EXL3_TARGETS is not a list. Only with WITH_ROCM=true AND WITH_EXL3=true:
 # it is a HIP engine and adds ~8 GB (PyTorch's bundled ROCm libraries, already
 # pruned to gfx1100), which the Vulkan-only image must not carry. Built on the
 # classic ROCm toolchain whatever ROCM_CHANNEL says: the PyTorch wheels are
 # ROCm 7.2 builds and the fork is tested on 7.2.4 (= ROCM_VERSION).
 ARG WITH_EXL3=true
-ARG EXL3_REPO=https://github.com/phoenixhaxor/exllamav3-rocm.git
-ARG EXL3_BRANCH=main
+ARG EXL3_REPO=https://github.com/SelfRef/exllamav3-rdna.git
+ARG EXL3_BRANCH=rdna
 ARG EXL3_COMMIT=""
+ARG TABBY_REPO=https://github.com/theroyallab/tabbyAPI.git
+ARG TABBY_BRANCH=main
+ARG TABBY_COMMIT=""
 
 # ── whisper.cpp, stable-diffusion.cpp, audio.cpp ───────────────────────
 # Revisions (branch, tag or sha) of the other engines; their default branches.
@@ -1015,6 +1019,9 @@ FROM rocm-toolchain-classic AS exl3
 ARG EXL3_REPO
 ARG EXL3_BRANCH
 ARG EXL3_COMMIT
+ARG TABBY_REPO
+ARG TABBY_BRANCH
+ARG TABBY_COMMIT
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
         git build-essential ca-certificates python3.12-venv python3.12-dev \
@@ -1023,7 +1030,7 @@ RUN <<'BUILD'
 #!/bin/bash
 set -euo pipefail
 REF="${EXL3_COMMIT:-${EXL3_BRANCH}}"
-echo "=== Cloning exllamav3-rocm (${EXL3_BRANCH} @ ${REF}) ==="
+echo "=== Cloning exllamav3 (${EXL3_BRANCH} @ ${REF}) ==="
 mkdir -p /opt/exl3/exllamav3 && cd /opt/exl3/exllamav3
 git init -q
 git remote add origin "${EXL3_REPO}"
@@ -1032,53 +1039,41 @@ git checkout -q FETCH_HEAD
 COMMIT=$(git rev-parse HEAD)
 rm -rf .git
 
-# The fork's rocm/scripts/setup_env.sh, minus huggingface_hub (its httpx2-based
-# releases pin a tokenizers range with no wheel, so pip falls back to building
-# tokenizers 0.13 from source and fails without Rust; nothing at runtime needs it).
+# exllamav3's requirements.txt plus TabbyAPI's own dependencies, minus
+# huggingface_hub (its httpx2-based releases pin a tokenizers range with no
+# wheel, so pip falls back to building tokenizers 0.13 from source and fails
+# without Rust; nothing at runtime needs it).
 python3.12 -m venv /opt/exl3/venv
 . /opt/exl3/venv/bin/activate
 pip install --no-cache-dir --upgrade pip
 pip install --no-cache-dir torch==2.13.0 --index-url https://download.pytorch.org/whl/rocm7.2
 pip install --no-cache-dir tokenizers "numpy>=2.1" rich typing_extensions safetensors ninja \
-    pillow pyyaml marisa_trie pydantic "llguidance>=1.7.0" setuptools wheel
+    pillow pyyaml marisa_trie pydantic "llguidance>=1.7.0" setuptools wheel \
+    "fastapi-slim>=0.115" "pydantic>=2.11,<3" ruamel.yaml "uvicorn>=0.28.1" "jinja2>=3.0.0" loguru \
+    "sse-starlette>=2.2.0" packaging aiofiles aiohttp async_lru psutil "httptools>=0.5.0" requests uvloop
 
 # ROCm 7.2.4's clang 22 rejects the device-only rsqrtf() in host code; harmless
-# no-op once the fork fixes it.
+# no-op once upstream fixes it.
 sed -i 's/sm_scale == 0.0f ? rsqrtf((float) dim)/sm_scale == 0.0f ? 1.0f \/ sqrtf((float) dim)/' \
     exllamav3/exllamav3_ext/attention.cu
 
-# DFlash2 draft crashes as soon as two jobs share a batch (--max-batch-size > 1):
-# walk_block() hands a strided hidden state to .view(), every job is aborted and
-# clients get HTTP 503. Upstream exllamav3 575279513 adds .contiguous(); no-op
-# once the fork syncs it.
-sed -i 's/self\.hidden_proj\.forward(hidden\.half(), params = {})/self.hidden_proj.forward(hidden.half().contiguous(), params = {})/' \
-    exllamav3/modules/arch_specific/dflash2.py
-grep -q 'hidden_proj.forward(hidden.half().contiguous()' exllamav3/modules/arch_specific/dflash2.py \
-    || { echo "FATAL: DFlash2 walk_block contiguous patch no longer applies" >&2; exit 1; }
-
 echo "=== Building exllamav3_ext for gfx1100 ==="
-# = rocm/scripts/build.sh without its final import check (that one needs a GPU)
 CC=/opt/rocm/llvm/bin/clang CXX=/opt/rocm/llvm/bin/clang++ PYTORCH_ROCM_ARCH=gfx1100 \
 MAX_JOBS="$(nproc)" ROCM_HOME=/opt/rocm python setup.py build_ext --inplace --force
 EXLLAMA_NOCOMPILE=1 pip install --no-cache-dir -e . --no-deps --no-build-isolation
 rm -rf build
 
 echo "=== TabbyAPI ==="
-# The fork's installer pins the tested TabbyAPI commit and applies its RDNA3
-# patch. TabbyAPI ships its own models/ dir, so the installer's symlink lands
-# inside it; drop both, models are passed with --model-dir.
-mkdir -p /tmp/models
-bash rocm/scripts/install_tabbyapi.sh /opt/exl3/tabbyAPI /tmp/models
-TABBY_COMMIT=$(git -C /opt/exl3/tabbyAPI rev-parse HEAD)
-rm -rf /opt/exl3/tabbyAPI/.git /opt/exl3/tabbyAPI/models /opt/exl3/tabbyAPI/config.yml /tmp/models
-mkdir -p /opt/exl3/tabbyAPI/models
-# Stream deltas carry no "role"; LangChain's OpenAI client (LibreChat, n8n)
-# then builds a generic chunk and drops the delta's tool_calls, so a tool call
-# streams as an empty reply. Add the role OpenAI and llama-server send.
-sed -i 's/^\(        delta\["tool_calls"\] = delta_tool\)$/\1\n    if delta:\n        delta["role"] = "assistant"/' \
-    /opt/exl3/tabbyAPI/endpoints/OAI/utils/chat_completion.py
-grep -q 'delta\["role"\] = "assistant"' /opt/exl3/tabbyAPI/endpoints/OAI/utils/chat_completion.py \
-    || { echo "FATAL: TabbyAPI stream-delta role patch no longer applies" >&2; exit 1; }
+# Models are passed with --model-dir, so TabbyAPI's own models/ dir stays empty.
+TREF="${TABBY_COMMIT:-${TABBY_BRANCH}}"
+mkdir -p /opt/exl3/tabbyAPI && cd /opt/exl3/tabbyAPI
+git init -q
+git remote add origin "${TABBY_REPO}"
+git fetch --depth=1 origin "${TREF}"
+git checkout -q FETCH_HEAD
+TABBY_COMMIT=$(git rev-parse HEAD)
+rm -rf .git
+mkdir -p models
 # The image's Qwen templates, selectable with --prompt-template qwen-fixed / qwen-sharp.
 ln -s /etc/llama-swap/templates/qwen-fixed.jinja /opt/exl3/tabbyAPI/templates/qwen-fixed.jinja
 ln -s /etc/llama-swap/templates/qwen-sharp.jinja /opt/exl3/tabbyAPI/templates/qwen-sharp.jinja
@@ -1094,7 +1089,7 @@ echo "pruned $(( before - $(du -sm "$SP" | cut -f1) )) MB of non-gfx1100 kernels
 find /opt/exl3 -name __pycache__ -type d -prune -exec rm -rf {} +
 
 # Canary: the extension must import (no GPU needed to load it) and TabbyAPI must
-# accept the RDNA3 backend.
+# start.
 cd /
 python -c "import torch; from exllamav3.ext import exllamav3_ext; print('exllamav3_ext loads, torch', torch.__version__, torch.version.hip)"
 (cd /opt/exl3/tabbyAPI && python main.py --help >/dev/null)
@@ -1102,11 +1097,9 @@ python -c "import torch; from exllamav3.ext import exllamav3_ext; print('exllama
 mkdir -p /opt/exl3/bin
 cat > /opt/exl3/bin/exl3-server <<'EOF'
 #!/bin/sh
-# TabbyAPI on exllamav3-rocm. Every TabbyAPI config key is also a flag
-# (`exl3-server --help`); --config is optional. EXL3_NOGRAPH=mlp,gdn is the
-# fork's default (eager MLP/DeltaNet decode is ~0.5 % faster than HIP graphs).
+# TabbyAPI on exllamav3. Every TabbyAPI config key is also a flag
+# (`exl3-server --help`); --config is optional.
 export PYTHONPATH="/opt/exl3/exllamav3${PYTHONPATH:+:$PYTHONPATH}"
-export EXL3_NOGRAPH="${EXL3_NOGRAPH-mlp,gdn}"
 cd /opt/exl3/tabbyAPI
 exec /opt/exl3/venv/bin/python main.py "$@"
 EOF
@@ -1114,7 +1107,7 @@ chmod 755 /opt/exl3/bin/exl3-server
 
 mkdir -p /install/build-info
 { echo "exl3_commit: ${COMMIT} (${EXL3_REPO} @ ${EXL3_BRANCH})";
-  echo "exl3_tabbyapi_commit: ${TABBY_COMMIT}";
+  echo "exl3_tabbyapi_commit: ${TABBY_COMMIT} (${TABBY_REPO} @ ${TABBY_BRANCH})";
   echo "exl3_torch: $(python -c 'import torch; print(torch.__version__)')";
   echo "exl3_targets: gfx1100"; } > /install/build-info/exl3
 BUILD
@@ -1249,7 +1242,7 @@ FROM llama-rdna AS llama-rdna-true
 FROM rdna-none  AS llama-rdna-false
 FROM llama-rdna-${WITH_RDNA} AS llama-rdna-sel
 
-# ── exllamav3-rocm selection (WITH_ROCM x WITH_EXL3) ──────────────────
+# ── exllamav3 selection (WITH_ROCM x WITH_EXL3) ──────────────────
 # Needs BOTH switches on (it links the ROCm runtime, which only the WITH_ROCM
 # image installs), so the selection key is the concatenated pair.
 FROM alpine:3 AS exl3-none
@@ -1385,7 +1378,7 @@ RUN if [ "${WITH_ROCM}" = "true" ]; then \
     && ldconfig; \
     fi
 
-# exllamav3-rocm's prefill attention is Triton, which compiles a small C launcher
+# exllamav3's prefill attention is Triton, which compiles a small C launcher
 # per kernel signature at runtime with the system C compiler + Python headers.
 RUN if [ "${WITH_ROCM}" = "true" ] && [ "${WITH_EXL3}" = "true" ]; then \
     apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev python3.12-dev \

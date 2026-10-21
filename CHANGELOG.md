@@ -4,6 +4,24 @@ The image has no version numbers: every push and the scheduled rebuild publish
 from the then-current upstream branches, so changes are grouped by date. Newest
 first. The exact revisions inside any given image are in its `/versions.txt`.
 
+## 2026-10-21
+
+- **`exl3-server` now runs [SelfRef/exllamav3-rdna](https://github.com/SelfRef/exllamav3-rdna)**
+  instead of phoenixhaxor/exllamav3-rocm, which stopped moving on 2026-09-26: current upstream
+  exllamav3 (v1.6.3 and later, with its own ROCm backend) plus that port's RDNA3 matmul,
+  bundled-projection and decode-attention kernels, served by current upstream TabbyAPI (no
+  patches left: the DFlash2 batch fix and the stream-delta role fix are upstream). On Qwen3.8-27B
+  EXL3 + DFlash2 on an RX 7900 XTX: decode on par with the old build (+2-3 % where both
+  produce the same text), prefill 7 % faster, short prompts answered ~0.1 s sooner, and
+  **~2 GB less VRAM** (22.6 instead of 24.4 GB). It also carries a new Gated DeltaNet b/a
+  kernel (5x faster than upstream's). New build args
+  `TABBY_REPO` / `TABBY_BRANCH` / `TABBY_COMMIT`.
+- **llama.cpp-rdna on upstream master `52ffa027`** (224 commits): the ROCmFP4 matmul shaders
+  build again on the new base, the adaptive MTP draft and penalty-sampler fixes are re-merged.
+  Speed unchanged.
+- Stock `llama-server`: #28265 retired (upstream #30823 does the same), #25592 carried as a
+  rebased patch now that master's checkpoint invalidation changed under it.
+
 ## 2026-10-13
 
 - **README: reference setup for Qwen3.8-27B on an RX 7900 XTX**, with complete
