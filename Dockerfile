@@ -1338,7 +1338,9 @@ ARG BUILD_DATE
 # runtime), curl for healthchecks, python3 + PyYAML for the bundled `benchmark`
 # CLI. Mesa: only mesa-vulkan-drivers (+ deps) is taken from the PPA, not the
 # whole GL stack; software-properties-common is only needed to add it and is
-# purged again.
+# purged again. A failed PPA index is only a warning to plain apt-get update
+# (Launchpad 503s leave Ubuntu's Mesa in the image): retry it, then fail here
+# rather than at the final check.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libgomp1 libvulkan1 mesa-vulkan-drivers \
         rocm-smi \
@@ -1348,7 +1350,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         python3 python3-yaml \
     && if [ -n "${MESA_PPA}" ]; then \
         apt-get install -y --no-install-recommends software-properties-common \
-        && add-apt-repository -y "${MESA_PPA}" \
+        && add-apt-repository -y -n "${MESA_PPA}" \
+        && for i in 1 2 3 4 5; do \
+            apt-get update -o APT::Update::Error-Mode=any && break; \
+            [ "$i" = 5 ] && { echo "FATAL: ${MESA_PPA} index unavailable (Launchpad down?)" >&2; exit 1; }; \
+            sleep 60; \
+        done \
         && apt-get install -y --no-install-recommends --only-upgrade mesa-vulkan-drivers \
         && apt-get purge -y --auto-remove software-properties-common; \
     fi \
