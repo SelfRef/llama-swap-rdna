@@ -209,7 +209,9 @@ jobs:
         target: [llama-rocm, exl3, whisper-rocm, sd-rocm]
     steps:
       - uses: actions/checkout@v7
-      # ROCm dev base + build trees are large; stock runners have ~20 GB free
+      # ROCm dev base + build trees are large; stock runners have ~20 GB free.
+      # Uninstalling the large apt packages takes minutes and only exl3's ~20 GB
+      # classic -complete base needs that room; the multiarch stages do without.
       - name: Free disk space
         uses: jlumbroso/free-disk-space@main
         with:
@@ -217,7 +219,7 @@ jobs:
           android: true
           dotnet: true
           haskell: true
-          large-packages: true
+          large-packages: ${{ matrix.target == 'exl3' }}
           docker-images: true
           swap-storage: true
       - uses: docker/setup-buildx-action@v4
@@ -228,7 +230,7 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      # Persisted cache mounts, as in build-stages-vulkan (exl3 has none).
+      # Persisted cache mounts, as in build-stages-vulkan.
       - name: Restore cache mounts
         uses: actions/cache@v6
         with:
@@ -241,7 +243,8 @@ jobs:
           builder: ${{ steps.buildx.outputs.name }}
           cache-map: |
             {
-              "cache-mounts/ccache-rocm": {"target": "/ccache", "id": "ccache-rocm"}
+              "cache-mounts/ccache-rocm": {"target": "/ccache", "id": "ccache-rocm"},
+              "cache-mounts/ccache-exl3": {"target": "/ccache", "id": "ccache-exl3"}
             }
       # Same 429 retry as in build-stages-vulkan.
       - name: Build ${{ matrix.target }} stage

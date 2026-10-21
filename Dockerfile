@@ -963,6 +963,7 @@ cmake -B build \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_C_COMPILER_LAUNCHER=ccache \
     -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+    -DCMAKE_HIP_COMPILER_LAUNCHER=ccache \
     -DLLAMA_BUILD_TESTS=OFF \
     -DLLAMA_BUILD_EXAMPLES=OFF \
     -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
@@ -1024,9 +1025,9 @@ ARG TABBY_BRANCH
 ARG TABBY_COMMIT
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        git build-essential ca-certificates python3.12-venv python3.12-dev \
+        git build-essential ca-certificates ccache python3.12-venv python3.12-dev \
     && rm -rf /var/lib/apt/lists/*
-RUN <<'BUILD'
+RUN --mount=type=cache,id=ccache-exl3,target=/ccache <<'BUILD'
 #!/bin/bash
 set -euo pipefail
 REF="${EXL3_COMMIT:-${EXL3_BRANCH}}"
@@ -1058,8 +1059,28 @@ sed -i 's/sm_scale == 0.0f ? rsqrtf((float) dim)/sm_scale == 0.0f ? 1.0f \/ sqrt
     exllamav3/exllamav3_ext/attention.cu
 
 echo "=== Building exllamav3_ext for gfx1100 ==="
-CC=/opt/rocm/llvm/bin/clang CXX=/opt/rocm/llvm/bin/clang++ PYTORCH_ROCM_ARCH=gfx1100 \
+# ccache for the extension: torch's builder never wraps a compiler on ROCm, so two
+# wrappers do. hipcc's preprocessed output under --offload-compress is a compressed
+# (binary) offload bundle ccache cannot hash: drop the flag for its -E runs only
+# (the compile keeps it, and ccache's key still includes it). The wrappers are new
+# files every build, so compilers are identified by --version, not mtime.
+mkdir -p /tmp/ccw
+cat > /tmp/ccw/hipcc <<'HIPCC'
+#!/bin/bash
+if [[ " $* " == *" -E "* ]]; then
+    args=(); for a in "$@"; do [[ $a == --offload-compress ]] || args+=("$a"); done
+    set -- "${args[@]}"
+fi
+exec /opt/rocm/bin/hipcc "$@"
+HIPCC
+printf '#!/bin/sh\nexec ccache /opt/rocm/llvm/bin/clang++ "$@"\n' > /tmp/ccw/clang++
+chmod +x /tmp/ccw/hipcc /tmp/ccw/clang++
+CCACHE_DIR=/ccache CCACHE_MAXSIZE=2G CCACHE_COMPILERCHECK='%compiler% --version' \
+PYTORCH_NVCC="ccache /tmp/ccw/hipcc" \
+CC=/opt/rocm/llvm/bin/clang CXX=/tmp/ccw/clang++ PYTORCH_ROCM_ARCH=gfx1100 \
 MAX_JOBS="$(nproc)" ROCM_HOME=/opt/rocm python setup.py build_ext --inplace --force
+CCACHE_DIR=/ccache ccache --show-stats | grep -E "Hits|Misses" | head -2
+rm -rf /tmp/ccw
 EXLLAMA_NOCOMPILE=1 pip install --no-cache-dir -e . --no-deps --no-build-isolation
 rm -rf build
 
@@ -1138,6 +1159,7 @@ cmake -B build \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_C_COMPILER_LAUNCHER=ccache \
     -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+    -DCMAKE_HIP_COMPILER_LAUNCHER=ccache \
     -DWHISPER_FFMPEG=ON \
     -DGGML_HIP=ON \
     -DAMDGPU_TARGETS="${AMDGPU_TARGETS}"
@@ -1188,6 +1210,7 @@ cmake -B build \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_C_COMPILER_LAUNCHER=ccache \
     -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+    -DCMAKE_HIP_COMPILER_LAUNCHER=ccache \
     -DSD_BUILD_EXAMPLES=ON \
     -DSD_HIPBLAS=ON \
     -DAMDGPU_TARGETS="${AMDGPU_TARGETS}" \
