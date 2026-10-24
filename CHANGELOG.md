@@ -4,6 +4,13 @@ The image has no version numbers: every push and the scheduled rebuild publish
 from the then-current upstream branches, so changes are grouped by date. Newest
 first. The exact revisions inside any given image are in its `/versions.txt`.
 
+## 2026-10-24
+
+- **`exl3-server` on exllamav3 `dev` `1407bceb`**: SelfRef/exllamav3-rdna's Gated DeltaNet b/a
+  kernel and its residual-add hand-off between blocks are now upstream exllamav3 (#541, #550), so the
+  fork runs upstream's versions of both. Same output; decode unchanged on short prompts and
+  ~1-2 % slower per speculative round on deep (8k-32k) contexts from an upstream sampler change.
+
 ## 2026-10-21
 
 - **`exl3-server` now runs [SelfRef/exllamav3-rdna](https://github.com/SelfRef/exllamav3-rdna)**
