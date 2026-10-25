@@ -4,6 +4,18 @@ The image has no version numbers: every push and the scheduled rebuild publish
 from the then-current upstream branches, so changes are grouped by date. Newest
 first. The exact revisions inside any given image are in its `/versions.txt`.
 
+## 2026-10-25
+
+- **`llama-server-rdna` on upstream llama.cpp master of 2026-10-25** (103 commits since the last
+  bump) with #30190's new head: the coopmat1 flash-attention verify-token fold
+  (`GGML_VK_FA_QTOK_FOLD=1`) now covers any GQA ratio that fits the tile. Speed and greedy output
+  unchanged on Qwen3.8-27B ROCmFP4-FAST, Qwen3.6-35B-A3B and Qwen3.5-9B; the fold is still worth
+  +3.4 % decode at 32k context on Qwen3.8-27B with MTP. Five more upstream PRs were measured and
+  left out (details in the fork's README).
+- **`exl3-server` on exllamav3 `dev` `33435f22`**: brings upstream's sparse drafting head and Qwen
+  MTP hot-vocabulary drafting (both opt-in, not enabled by TabbyAPI) and a tokenizer fix. Decode and
+  output unchanged.
+
 ## 2026-10-24
 
 - **`exl3-server` on exllamav3 `dev` `1407bceb`**: SelfRef/exllamav3-rdna's Gated DeltaNet b/a
