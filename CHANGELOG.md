@@ -4,6 +4,12 @@ The image has no version numbers: every push and the scheduled rebuild publish
 from the then-current upstream branches, so changes are grouped by date. Newest
 first. The exact revisions inside any given image are in its `/versions.txt`.
 
+## 2026-10-28
+
+- **Upstream llama.cpp merged PR #30283** (the int8 coopmat1 matmul on RDNA3/4 reading the next
+  row's weights when K is not a multiple of 128). `llama-server` now gets the fix from master, so
+  the image no longer merges any open llama.cpp PR on top.
+
 ## 2026-10-25
 
 - **`llama-server-rdna` on upstream llama.cpp master of 2026-10-25** (103 commits since the last

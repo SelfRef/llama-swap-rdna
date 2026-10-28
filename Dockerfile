@@ -189,22 +189,17 @@ ARG LLAMA_COMMIT="master"
 # One tree for both backends since 2026-09-06 (none of the PRs touches
 # CUDA/HIP sources, so the ROCm build takes the same tree).
 #
-# Current set, revised 2026-10-20 against master 84e66d032:
-#   #30283 bound the A side of the int8 coopmat1 matmul (RDNA3/4) to end_k
-#          like the B side: the load is clamped in bounds and a k step past
-#          end_k writes a zero A scale. Without it a row whose K is not a
-#          multiple of 128 reads the next row's blocks (NaN on a non-finite
-#          scale). Added 2026-10-10, zero fill after review the same day;
-#          pp2048 -0.5..-1.0 %, decode flat. The llama.cpp-rdna binaries
-#          carry the same change.
-# plus three PRs carried as rebased patches because they no longer merge as-is
+# Current set, revised 2026-10-28: no open PRs are merged.
+# Three PRs are carried as rebased patches because they no longer merge as-is
 # (see patches/README.md): #25592 (exact-position checkpoint restore for
 # hybrid/recurrent models; agentic multi-turn @130k: 35 s -> 1.3 s turn
 # restore), #25666 (no MMVQ for speculative-decode steps on
 # AMD; only gfx1151 numbers exist upstream -- delete it if a discrete-GPU
 # benchmark shows no gain) and #28333 (zero the MTP carrier at sequence start).
 #
-# Retired, merged upstream: #27952 (int8 coopmat1 MMQ for RDNA3/4, 09-24;
+# Retired, merged upstream: #30283 (bound the A side of the int8 coopmat1
+#   matmul to end_k, zero A scale past it; carried 2026-10-10, merged
+#   2026-10-28), #27952 (int8 coopmat1 MMQ for RDNA3/4, 09-24;
 #   pp512 +4.6 % dense / +18.5 % MoE on an RX 7900 XTX. Its final form also
 #   brings the IQ4_XS MMQ/MMV pair #28440/#28415, which produced subtly broken
 #   UD-Q4_K_XL output on RDNA3 when tested on 09-09 -- check the text, not
@@ -237,7 +232,7 @@ ARG LLAMA_COMMIT="master"
 # backends -- so a patch has to be generated against the tree with ALL the
 # other merges in it, not just against master (see patches/README.md).
 # Retire PRs from the list as they merge (the build says so).
-ARG LLAMA_PATCHES="30283"
+ARG LLAMA_PATCHES=""
 
 # Cache key only (see LLAMA_SWAP_PATCHES_HEADS).
 ARG LLAMA_PATCHES_HEADS=""
