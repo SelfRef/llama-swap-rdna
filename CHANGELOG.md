@@ -4,6 +4,21 @@ The image has no version numbers: every push and the scheduled rebuild publish
 from the then-current upstream branches, so changes are grouped by date. Newest
 first. The exact revisions inside any given image are in its `/versions.txt`.
 
+## 2026-11-01
+
+- **Fix: `exl3-server` loads models again** (#7). The 2026-10-31 image paired TabbyAPI main, which
+  had started to require exllamav3 1.6.5 and then 1.6.6, with exllamav3-rdna at 1.6.4, so every exl3
+  model failed at load with "TabbyAPI requires exllamav3 1.6.5 or greater". exllamav3-rdna is now
+  on upstream v1.6.6 (`dev` `bd1f5191`): the new loop detector TabbyAPI uses, batched sampler
+  results while drafting, draft budgeting at load. Output and speed unchanged on Qwen3.8-27B with
+  DFlash2. The build now runs TabbyAPI's own exllamav3 version check, so a mismatched pair fails
+  the build instead of being published.
+- **`llama-server-rdna` on upstream llama.cpp master of 2026-10-31** (144 commits). Greedy output
+  changes through upstream's RMS norm with subgroup reductions (#29882; perplexity unchanged);
+  speed unchanged on Qwen3.8-27B ROCmFP4-FAST and Qwen3.5-9B, Qwen3.6-35B-A3B +4 % decode from
+  better draft acceptance. Five more upstream PRs were measured and left out (details in the fork's
+  README).
+
 ## 2026-10-28
 
 - **Upstream llama.cpp merged PR #30283** (the int8 coopmat1 matmul on RDNA3/4 reading the next
