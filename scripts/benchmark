@@ -63,6 +63,10 @@ Things the numbers have taught us (keep in mind when reading a row):
   * accept  -- speculative entries only: draft tokens accepted / drafted. The gain
                is ENTIRELY prompt-dependent (~50% on prose, ~100% on copy/JSON), so
                never rank spec variants on one preset.
+  * vram    -- VRAM held by the model's own server process, over every GPU it uses
+               (amdgpu DRM fdinfo). Falls back to all VRAM in use on all cards when
+               that process cannot be read (remote llama-swap, other drivers); that
+               fallback also counts other models and other containers on the box.
   * gtt     -- GPU GTT (system RAM over PCIe) in use while the model is resident.
                If a model that should fit in VRAM pushes gtt up by more than
                --spill-threshold the row is flagged SPILL and every t/s in it is a
@@ -154,6 +158,7 @@ import time
 import zipfile
 import zlib
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 
@@ -694,6 +699,51 @@ def vram_mib() -> int:
 
 def gtt_mib() -> int:
     return _sysfs_sum("mem_info_gtt_used") >> 20
+
+
+def server_vram_mib(target: Target) -> int | None:
+    """VRAM held by the model's own server process, summed over every GPU it has open.
+
+    mem_info_vram_used counts everything on a card (other models, other containers), and
+    vram_mib() adds up all cards, so on a multi-GPU host it is not the model's footprint.
+    This finds the process listening on llama-swap's proxy port for the model and reads
+    its DRM fdinfo (drm-resident-vram, or drm-memory-vram on older kernels), once per
+    DRM client. ROCm/KFD allocations show up there too. None when it cannot be read: a
+    remote llama-swap, another pid namespace, a non-amdgpu driver."""
+    try:
+        status, raw = http("GET", f"{target.base}/running", None, target.headers, 30)
+        proxy = next(r.get("proxy", "") for r in json.loads(raw).get("running", [])
+                     if r.get("model") == target.model)
+        port = urllib.parse.urlsplit(proxy).port
+        sockets = set()
+        for table in ("/proc/net/tcp", "/proc/net/tcp6"):
+            with open(table) as fh:
+                for line in list(fh)[1:]:
+                    col = line.split()
+                    if col[3] == "0A" and int(col[1].rsplit(":", 1)[1], 16) == port:   # 0A = LISTEN
+                        sockets.add(f"socket:[{col[9]}]")
+        pid = next(fd.split("/")[2] for fd in glob.glob("/proc/[0-9]*/fd/*")
+                   if _readlink(fd) in sockets)
+        clients: dict[tuple, int] = {}
+        for f in glob.glob(f"/proc/{pid}/fdinfo/*"):
+            try:
+                kv = {k: v.strip() for k, v in (l.split(":", 1) for l in open(f) if ":" in l)}
+            except OSError:
+                continue
+            if "drm-client-id" not in kv:
+                continue
+            n, unit = ((kv.get("drm-resident-vram") or kv.get("drm-memory-vram") or "0").split() + ["B"])[:2]
+            clients[(kv.get("drm-pdev"), kv["drm-client-id"])] = int(n) * {"B": 1, "KiB": 1 << 10, "MiB": 1 << 20}[unit]
+        return sum(clients.values()) >> 20 if clients else None
+    except (StopIteration, OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def _readlink(path: str) -> str:
+    try:
+        return os.readlink(path)
+    except OSError:
+        return ""
 
 
 def is_uma() -> bool:
@@ -1701,7 +1751,8 @@ def bench_server(target: Target, entry: Entry, presets: list[Preset], opts: argp
             row.hash = runs[0][1]   # first run only -- see the docstring on hashes
             row.wall = statistics.median(r[0].get("wall_s", 0) or 0 for r in runs) or None
             row.extra = runs[0][2]
-            row.vram, row.gtt = vram_mib(), gtt_mib()
+            own = server_vram_mib(target)
+            row.vram, row.gtt = (vram_mib() if own is None else own), gtt_mib()
             all_layers = entry.ngl == "all" or (entry.ngl or "").isdigit() and int(entry.ngl) >= 999
             if (not uma and opts.spill_threshold and all_layers and entry.fit != "on"
                     and row.gtt - baseline_gtt > opts.spill_threshold):
