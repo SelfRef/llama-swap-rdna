@@ -4,6 +4,12 @@ The image has no version numbers: every push and the scheduled rebuild publish
 from the then-current upstream branches, so changes are grouped by date. Newest
 first. The exact revisions inside any given image are in its `/versions.txt`.
 
+## 2026-11-02
+
+- **New: `hipbench`**, the `benchmark` prompts against any OpenAI-style server (`exl3-server`, a bare
+  llama-server), timed client-side; the tool behind the exllamav3-rdna Measured tables, so other cards
+  can produce comparable rows. See [Benchmarking](README.md#any-openai-style-server-hipbench).
+
 ## 2026-11-01
 
 - **Fix: `exl3-server` loads models again** (#7). The 2026-10-31 image paired TabbyAPI main, which

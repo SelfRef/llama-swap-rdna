@@ -1468,6 +1468,10 @@ COPY config/config.yaml /etc/llama-swap/config/config.yaml
 # config.yaml text entries, one table. Pure python3 + PyYAML (apt: the image is
 # PEP-668 externally managed).
 COPY --chmod=0755 scripts/benchmark /usr/local/bin/benchmark
+# `hipbench` (scripts/hipbench): the same prompts against any OpenAI-style server
+# (exl3-server, a bare llama-server), client-side timing; imports benchmark from
+# its own directory, so the two stay side by side.
+COPY --chmod=0755 scripts/hipbench /usr/local/bin/hipbench
 
 # `rerank-bench` CLI (scripts/rerank-bench): nDCG@10 of reranker entries over a
 # cached embedding stage 1 on MTEB retrieval sets. numpy + pyarrow are not in the

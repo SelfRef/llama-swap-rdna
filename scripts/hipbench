@@ -1,0 +1,345 @@
+#!/usr/bin/env python3
+"""hipbench -- engine-agnostic speed benchmark over OpenAI-style /v1/chat/completions.
+
+Reuses the prompts and presets of the `benchmark` CLI (imported from the `benchmark`
+file next to this one; needs PyYAML) so rows are comparable across engines: exl3-server,
+llama.cpp (llama-server directly or llama-swap's /upstream/<entry> raw proxy), anything
+OpenAI-shaped. Outputs are greedy, so a matching hash means the same text as another
+machine's row, and its decode speed compares like for like.
+
+Timing is CLIENT-SIDE from the SSE stream, the same way for every engine:
+    pp  = prompt_tokens / TTFT                 (TTFT = first content/reasoning/tool delta)
+    tg  = (completion_tokens - 1) / (t_last_chunk - t_first_chunk)
+Token counts come from the final `usage` object (stream_options.include_usage); when a
+server sends none, the identical request is re-run non-streaming for its usage.
+llama-server also reports its own `timings` in the last chunk; those are recorded as
+srv_pp/srv_tg so the client-side method can be validated against them.
+
+Every measured request is greedy (temperature 0, top_k 1, seed 42). Thinking is turned
+off via chat_template_kwargs.enable_thinking except for the `reasoning` preset.
+"""
+from __future__ import annotations
+
+import argparse
+import datetime as _dt
+import glob
+import hashlib
+import importlib.machinery
+import importlib.util
+import json
+import os
+import statistics
+import sys
+import time
+import urllib.error
+import urllib.request
+
+BENCH_SRC = os.path.join(os.path.dirname(os.path.realpath(__file__)), "benchmark")
+N_WARMUP = 16
+GREEDY = {"temperature": 0, "top_k": 1, "seed": 42}
+
+
+def load_bench():
+    loader = importlib.machinery.SourceFileLoader("lsbench", BENCH_SRC)
+    spec = importlib.util.spec_from_loader("lsbench", loader)
+    m = importlib.util.module_from_spec(spec)
+    sys.modules["lsbench"] = m   # dataclasses resolve annotations via sys.modules[cls.__module__]
+    loader.exec_module(m)
+    return m
+
+
+B = load_bench()
+
+
+def user(text: str) -> list[dict]:
+    return [{"role": "user", "content": text}]
+
+
+def presets(opts) -> dict[str, dict]:
+    """name -> {messages, max_tokens, think, tools?, note}"""
+    return {
+        "prose": dict(messages=user(B.PROSE_PROMPT), max_tokens=512, think=False,
+                      note="free prose, speculative worst case"),
+        "json": dict(messages=user(B.JSON_PROMPT), max_tokens=512, think=False,
+                     note="structured JSON, speculative best case"),
+        "refactor": dict(messages=B.REFACTOR_MESSAGES, max_tokens=1024, think=False,
+                         note="copy-heavy code edit (~2k-token prompt)"),
+        "tools": dict(messages=B.TOOLS_MESSAGES, max_tokens=256, think=False, tools=B.TOOLS_TOOL,
+                      note="single tool call, natural stop"),
+        "reasoning": dict(messages=B.REASONING_MESSAGES, max_tokens=512, think=True,
+                          note="thinking on"),
+        "ctx8k": dict(messages=user(B.prefill_prompt(8192) + " Then, after the answer, write a detailed "
+                                    "300-word summary of the log above in flowing prose."),
+                      max_tokens=128, think=False,
+                      note="8k-token prompt + 128 out at depth (hipEngine's PP8192/TG128 shape)"),
+        "prefill": dict(messages=user(B.prefill_prompt(opts.prefill_tokens)), max_tokens=16, think=False,
+                        note=f"pure prefill, ~{opts.prefill_tokens} tokens, 16 out; pp = tokens/TTFT"),
+    }
+
+
+_NONCE_BASE = hashlib.sha256(str(time.time_ns()).encode()).hexdigest()[:6]
+_NONCE_N = 0
+
+
+def with_nonce(messages: list[dict]) -> list[dict]:
+    """Prefix the FIRST message with a per-request unique tag so no engine's prefix /
+    prompt cache (llama-server cache_prompt, hipfire prompt cache, hipEngine prefix
+    cache) can serve a repeated request from cache: every prefill is a cold one."""
+    global _NONCE_N
+    _NONCE_N += 1
+    tag = f"[ref {_NONCE_BASE}-{_NONCE_N:04d}] "
+    out = [dict(m) for m in messages]
+    c = out[0].get("content")
+    out[0]["content"] = tag + c if isinstance(c, str) else c
+    return out
+
+
+def body_for(p: dict, model: str, max_tokens: int, opts, stream: bool) -> dict:
+    b = {"model": model, "messages": with_nonce(p["messages"]), "max_tokens": max_tokens, "stream": stream,
+         "cache_prompt": False, **GREEDY}
+    if stream:
+        b["stream_options"] = {"include_usage": True}
+    if p.get("tools"):
+        b["tools"] = p["tools"]
+        b["tool_choice"] = "auto"
+    if not opts.no_thinking_kwarg:
+        b["chat_template_kwargs"] = {"enable_thinking": bool(p["think"])}
+    if opts.extra:
+        b.update(json.loads(opts.extra))
+    for k in (opts.drop or "").split(","):
+        b.pop(k.strip(), None) if k.strip() else None
+    return b
+
+
+def post(url: str, body: dict, headers: dict, timeout: float, stream: bool):
+    data = json.dumps(body).encode()
+    h = {"Content-Type": "application/json", **headers}
+    req = urllib.request.Request(url, data=data, headers=h, method="POST")
+    try:
+        return urllib.request.urlopen(req, timeout=timeout)
+    except urllib.error.HTTPError as ex:
+        raise RuntimeError(f"HTTP {ex.code}: {ex.read()[:600].decode(errors='replace')}") from None
+
+
+def run_stream(url: str, body: dict, headers: dict, timeout: float) -> dict:
+    t0 = time.monotonic()
+    r = post(url, body, headers, timeout, True)
+    t_first = None
+    t_last = t0
+    usage = None
+    timings = None
+    finish = None
+    texts: list[str] = []
+    n_chunks = 0
+    tool_calls = 0
+    reasoning_seen = False
+    for raw in r:
+        line = raw.decode(errors="replace").strip()
+        if not line.startswith("data:"):
+            continue
+        payload = line[5:].strip()
+        if payload == "[DONE]":
+            break
+        try:
+            obj = json.loads(payload)
+        except json.JSONDecodeError:
+            continue
+        now = time.monotonic()
+        if obj.get("usage"):
+            usage = obj["usage"]
+        if obj.get("timings"):
+            timings = obj["timings"]
+        for ch in obj.get("choices") or []:
+            d = ch.get("delta") or {}
+            piece = ""
+            if d.get("content"):
+                piece += d["content"]
+            rc = d.get("reasoning_content") or d.get("reasoning")
+            if rc:
+                piece += rc
+                reasoning_seen = True
+            if d.get("tool_calls"):
+                tool_calls += len(d["tool_calls"])
+                piece += json.dumps(d["tool_calls"], sort_keys=True)
+            if piece:
+                if t_first is None:
+                    t_first = now
+                t_last = now
+                n_chunks += 1
+                texts.append(piece)
+            if ch.get("finish_reason"):
+                finish = ch["finish_reason"]
+    t_end = time.monotonic()
+    return {"t0": t0, "t_first": t_first, "t_last": t_last, "t_end": t_end, "usage": usage,
+            "timings": timings, "finish": finish, "text": "".join(texts), "chunks": n_chunks,
+            "tool_calls": tool_calls, "reasoning": reasoning_seen}
+
+
+def run_plain(url: str, body: dict, headers: dict, timeout: float) -> dict:
+    t0 = time.monotonic()
+    r = post(url, body, headers, timeout, False)
+    obj = json.loads(r.read())
+    return {"wall": time.monotonic() - t0, "usage": obj.get("usage"), "timings": obj.get("timings"),
+            "finish": (obj.get("choices") or [{}])[0].get("finish_reason")}
+
+
+def measure(url, p, model, opts, headers) -> dict:
+    s = run_stream(url, body_for(p, model, p["max_tokens"], opts, True), headers, opts.timeout)
+    usage = s["usage"]
+    note = ""
+    if not usage or usage.get("completion_tokens") is None:
+        # no usage on the stream -> ask the same thing once more, non-streaming, for counts
+        q = run_plain(url, body_for(p, model, p["max_tokens"], opts, False), headers, opts.timeout)
+        usage = q["usage"] or {}
+        note = "usage:nonstream"
+    ptok = int(usage.get("prompt_tokens") or 0)
+    ctok = int(usage.get("completion_tokens") or 0)
+    ttft = (s["t_first"] - s["t0"]) if s["t_first"] else None
+    dec = (s["t_last"] - s["t_first"]) if s["t_first"] else None
+    pp = ptok / ttft if (ttft and ptok) else None
+    tg = (ctok - 1) / dec if (dec and dec > 0 and ctok > 1) else None
+    out = {"pp": pp, "tg": tg, "ptok": ptok, "tok": ctok, "ttft": ttft, "wall": s["t_end"] - s["t0"],
+           "finish": s["finish"], "chunks": s["chunks"], "tool_calls": s["tool_calls"],
+           "reasoning": s["reasoning"], "hash": hashlib.sha256(s["text"].encode()).hexdigest()[:12],
+           "note": note, "text_head": s["text"][:160]}
+    if s["timings"]:
+        t = s["timings"]
+        out["srv_pp"] = t.get("prompt_per_second")
+        out["srv_tg"] = t.get("predicted_per_second")
+        if t.get("draft_n"):
+            out["accept"] = 100.0 * (t.get("draft_n_accepted") or 0) / t["draft_n"]
+    return out
+
+
+def largest_gpu_vram() -> str | None:
+    """mem_info_vram_used of the amdgpu card with the most VRAM (the usual single-big-GPU case)."""
+    def total(p):
+        try:
+            return int(open(p.replace("_used", "_total")).read())
+        except OSError:
+            return 0
+    cards = glob.glob("/sys/class/drm/card*/device/mem_info_vram_used")
+    return max(cards, key=total) if cards else None
+
+
+def vram_mib(path: str | None) -> int | None:
+    if not path:
+        return None
+    try:
+        return int(open(path).read()) // (1024 * 1024)
+    except OSError:
+        return None
+
+
+def med(vals):
+    vals = [v for v in vals if v is not None]
+    return statistics.median(vals) if vals else None
+
+
+def fmt(v, nd=1):
+    return "-" if v is None else f"{v:.{nd}f}"
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--url", required=True, help="base URL, e.g. http://127.0.0.1:5000 or http://host:8080/upstream/<entry>")
+    ap.add_argument("--model", required=True, help="value of the `model` field")
+    ap.add_argument("--label", help="engine label for the rows (default: model)")
+    ap.add_argument("--api-key")
+    ap.add_argument("--presets", default="prose,json,refactor,tools,reasoning,ctx8k,prefill")
+    ap.add_argument("--repeat", type=int, default=2)
+    ap.add_argument("--prefill-tokens", type=int, default=30720)
+    ap.add_argument("--timeout", type=float, default=1800)
+    ap.add_argument("--extra", help="JSON merged into every request body")
+    ap.add_argument("--drop", help="comma list of body keys to remove (e.g. top_k,seed)")
+    ap.add_argument("--no-thinking-kwarg", action="store_true", help="do not send chat_template_kwargs.enable_thinking")
+    ap.add_argument("--no-warmup", action="store_true")
+    ap.add_argument("--vram-sysfs", default=largest_gpu_vram(),
+                    help="sysfs file read after each preset (default: the amdgpu card with the most VRAM)")
+    ap.add_argument("--json-out")
+    ap.add_argument("--md-out")
+    ap.add_argument("--show-text", action="store_true")
+    opts = ap.parse_args()
+
+    headers = {"Authorization": f"Bearer {opts.api_key}"} if opts.api_key else {}
+    url = opts.url.rstrip("/") + "/v1/chat/completions"
+    label = opts.label or opts.model
+    P = presets(opts)
+    names = [n.strip() for n in opts.presets.split(",") if n.strip()]
+    for n in names:
+        if n not in P:
+            print(f"unknown preset {n}; have {','.join(P)}", file=sys.stderr)
+            return 2
+
+    if not opts.no_warmup:
+        for text in (B.PROSE_PROMPT, B.prefill_prompt(700)):
+            p = dict(messages=user(text), max_tokens=N_WARMUP, think=False)
+            t0 = time.monotonic()
+            run_plain(url, body_for(p, opts.model, N_WARMUP, opts, False), headers, opts.timeout)
+            print(f"warmup {len(text)} chars: {time.monotonic() - t0:.1f}s", file=sys.stderr, flush=True)
+
+    today = _dt.date.today().isoformat()
+    rows = []
+    print(f"{'engine':<22} {'preset':<10} {'pp':>8} {'tg':>7} {'ptok':>6} {'tok':>5} {'ttft':>7} {'t(s)':>7} "
+          f"{'srv_pp':>7} {'srv_tg':>7} {'acc':>4} {'vram':>6}  notes", flush=True)
+    for n in names:
+        p = P[n]
+        row = {"date": today, "engine": label, "preset": n, "error": None}
+        try:
+            if n not in ("prefill", "ctx8k") and not opts.no_warmup:
+                run_plain(url, body_for(p, opts.model, N_WARMUP, opts, False), headers, opts.timeout)
+            runs = [measure(url, p, opts.model, opts, headers) for _ in range(max(1, opts.repeat))]
+            r0 = runs[0]
+            row.update({
+                "pp": med([r["pp"] for r in runs]), "tg": med([r["tg"] for r in runs]),
+                "ptok": r0["ptok"], "tok": r0["tok"], "ttft": med([r["ttft"] for r in runs]),
+                "wall": med([r["wall"] for r in runs]),
+                "srv_pp": med([r.get("srv_pp") for r in runs]), "srv_tg": med([r.get("srv_tg") for r in runs]),
+                "accept": med([r.get("accept") for r in runs]),
+                "finish": r0["finish"], "tool_calls": r0["tool_calls"], "reasoning": r0["reasoning"],
+                "hash": r0["hash"], "chunks": r0["chunks"], "note": r0["note"], "text_head": r0["text_head"],
+                "tok_runs": [r["tok"] for r in runs], "tg_runs": [r["tg"] for r in runs],
+                "vram_mib": vram_mib(opts.vram_sysfs),
+            })
+        except Exception as ex:  # noqa: BLE001
+            row["error"] = str(ex)[:400]
+        rows.append(row)
+        if row["error"]:
+            print(f"{label:<22} {n:<10} FAILED: {row['error']}", flush=True)
+            continue
+        notes = []
+        if n == "tools":
+            notes.append(f"call={'yes' if row['tool_calls'] else 'no'} finish={row['finish']}")
+        if n == "reasoning":
+            notes.append(f"think={'yes' if row['reasoning'] else 'no'}")
+        if row["note"]:
+            notes.append(row["note"])
+        if len(set(row["tok_runs"])) > 1:
+            notes.append(f"tok_runs={row['tok_runs']}")
+        notes.append(f"hash={row['hash']}")
+        print(f"{label:<22} {n:<10} {fmt(row['pp']):>8} {fmt(row['tg']):>7} {row['ptok']:>6} {row['tok']:>5} "
+              f"{fmt(row['ttft'], 2):>7} {fmt(row['wall'], 2):>7} {fmt(row['srv_pp']):>7} {fmt(row['srv_tg']):>7} "
+              f"{fmt(row['accept'], 0):>4} {str(row['vram_mib'] or '-'):>6}  {' '.join(notes)}", flush=True)
+        if opts.show_text:
+            print(f"    {row['text_head']!r}", flush=True)
+
+    if opts.json_out:
+        with open(opts.json_out, "a") as f:
+            for r in rows:
+                f.write(json.dumps(r) + "\n")
+    if opts.md_out:
+        with open(opts.md_out, "a") as f:
+            for r in rows:
+                if r["error"]:
+                    f.write(f"| {today} | {label} | {r['preset']} | FAILED | {r['error']} |\n")
+                    continue
+                f.write(f"| {today} | {label} | {r['preset']} | pp **{fmt(r['pp'])}** / tg **{fmt(r['tg'])}** t/s, "
+                        f"{r['ptok']}->{r['tok']} tok, ttft {fmt(r['ttft'], 2)} s, t {fmt(r['wall'], 2)} s"
+                        + (f", srv {fmt(r['srv_pp'])}/{fmt(r['srv_tg'])}" if r['srv_pp'] else "")
+                        + (f", accept {fmt(r['accept'], 0)}%" if r['accept'] is not None else "")
+                        + f", vram {r['vram_mib']} MiB | finish={r['finish']} hash `{r['hash']}` |\n")
+    return 1 if any(r["error"] for r in rows) else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

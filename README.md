@@ -454,6 +454,26 @@ sha256 of the first measured output and is reproducible for the same request seq
 loads and builds. Needs `LLAMA_SWAP_API_KEY` in the environment when llama-swap has `apiKeys`.
 The `-rocm` variant exists only in the `:full`/`:latest` tag; `-rdna` is in both tags.
 
+### Any OpenAI-style server (`hipbench`)
+
+`benchmark` only drives llama-server entries. `hipbench` (in `/usr/local/bin`, source
+`scripts/hipbench`) sends the same prompts to anything that speaks `/v1/chat/completions` —
+`exl3-server`, a bare llama-server, another engine — and times them client-side from the stream:
+prefill = prompt tokens / time to first token, decode = (tokens − 1) / stream time. Requests are
+greedy with a per-request prefix that defeats prompt caches. Presets: `prose`, `json`, `refactor`,
+`tools`, `reasoning`, `ctx8k` (8k-token prompt, 128 out) and `prefill` (`--prefill-tokens`,
+default 30720, 16 out). The `exllamav3-rdna` Measured tables use it.
+
+```sh
+docker exec <container> hipbench --url http://127.0.0.1:<port> --model <name> --repeat 3
+docker exec <container> hipbench --url http://127.0.0.1:<port> --model <name> --presets ctx8k,prefill --repeat 3
+```
+
+Speculative decode depends on the generated text, so compare decode only between rows with the same
+`hash`; different hashes mean different text, and the gap may be draft acceptance, not speed.
+Prefill does not depend on it. `vram` reads the card with the most VRAM (`--vram-sysfs` for another).
+`--json-out` / `--md-out` append the rows to a file.
+
 ### Reranker quality (`rerank-bench`)
 
 `rerank-bench` (in `/usr/local/bin`, source `scripts/rerank-bench`) measures what `benchmark` cannot:
