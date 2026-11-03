@@ -6,6 +6,12 @@ first. The exact revisions inside any given image are in its `/versions.txt`.
 
 ## 2026-11-03
 
+- **New in llama-swap: `hooks.on_unload.restore`** (upstream PR #1301, merged on top until it lands).
+  Models listed there are loaded again after other models stop, 30 s (`delay`) after the last stop,
+  and only when that evicts nothing: a model someone requested keeps its GPU, and the default comes
+  back once it unloads. Pair it with `hooks.on_startup.preload` and a `ttl` on the models you swap
+  in. See [Upstream PRs in the llama.cpp build](README.md#upstream-prs-in-the-llamacpp-build) for how
+  PRs are carried.
 - **`exl3-server` runs on the RX 7800 XT / 7700 XT (gfx1101)** as well as gfx1100. The exllamav3
   extension is built for both, and PyTorch's bundled rocBLAS keeps the kernels for both (it kept
   gfx1100 only before, so gfx1101 had none). New build arg `EXL3_TARGETS`. On a 7800 XT, Qwen3.5

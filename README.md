@@ -2,7 +2,7 @@
 
 The [llama-swap](https://github.com/mostlygeek/llama-swap) `unified-vulkan` image rebuilt from source for AMD hardware: the same binary names, config location and port, so a config written for upstream's image works here, but with **both GPU stacks**, everything at its **current upstream revision**, and the open PRs worth having merged in:
 
-- **llama-swap itself built from source** — current `main` plus any open upstream PRs worth having (`LLAMA_SWAP_PATCHES`, empty at the moment — #1099, live per-turn generation stats in the Playground Chat, merged upstream 2026-09-07), web UI embedded, `vllm-wrapper` from the same tree. It is *the* `llama-swap` binary, not a side binary.
+- **llama-swap itself built from source** — current `main` plus any open upstream PRs worth having (`LLAMA_SWAP_PATCHES`, now [#1301](https://github.com/mostlygeek/llama-swap/pull/1301): `hooks.on_unload.restore` reloads default models after other models unload, only when that evicts nothing), web UI embedded, `vllm-wrapper` from the same tree. It is *the* `llama-swap` binary, not a side binary.
 - **llama.cpp from current master plus open upstream PRs** (`LLAMA_PATCHES` plus rebased patches: Qwen 3.5-family delta-net fix, exact checkpoint restore for hybrid models, Vulkan MMVQ for speculative decoding on AMD, MTP carrier reset — see [Upstream PRs in the llama.cpp build](#upstream-prs-in-the-llamacpp-build)), the **same tree for the Vulkan and the ROCm build**. There is no un-patched llama.cpp in the image: `llama-server` is the patched build.
 - **Vulkan** (Mesa RADV) — works on practically any AMD GPU, including RDNA1/2, iGPUs/APUs and anything ROCm doesn't cover. Built with a modern shader compiler (see [Why build the Vulkan binaries ourselves](#why-build-the-vulkan-binaries-ourselves)) and shipped with a **current Mesa/RADV** instead of Ubuntu 24.04's.
 - **ROCm 7.14** (HIP) — the full ROCm userspace runtime (HIP, rocBLAS/hipBLAS, hipBLASLt, `rocminfo`) plus HIP builds of the engines, with flash-attention kernels for every KV-cache quant. ROCm comes from AMD's per-gfx `packages-multi-arch` repository (`ROCM_CHANNEL=multiarch`), so the image carries BLAS kernels only for the gfx targets it is built for instead of ~6 GB of all-arch Tensile blobs; the classic `repo.radeon.com` channel (tops out at ROCm 7.2.4, which still has the HIP-graphs bug fixed in 7.13) remains available as `ROCM_CHANNEL=classic`.
@@ -74,7 +74,7 @@ Build args:
 
 - `LLAMA_SWAP_COMMIT` — default `main`  
   llama-swap revision to build `llama-swap` and `vllm-wrapper` from (sha, tag such as `v255`, or branch).
-- `LLAMA_SWAP_PATCHES` — default *(empty)*  
+- `LLAMA_SWAP_PATCHES` — default `1301`  
   Space-separated open upstream llama-swap PR numbers merged on top; same drift rules as `LLAMA_PATCHES`. The version string gets a `+prN` suffix per merged PR, e.g. `v255-2-g1a2b3c+pr1099` (that PR merged upstream 2026-09-07 and was retired).
 - `WITH_ROCM` — default `true`  
   `false` builds the Vulkan-only image (no HIP stages, no ROCm runtime); CI uses this for `:vulkan`
@@ -300,7 +300,7 @@ Measured on an RX 7900 XTX with this image (Mesa 26.1, llama-bench, q8_0/q4_0 KV
 | [#22970](https://github.com/ggml-org/llama.cpp/pull/22970) | Vulkan K-quant A-matrix transpose | – | – | – | stale, conflicts with master |
 | [#28507](https://github.com/ggml-org/llama.cpp/pull/28507) + [#28489](https://github.com/ggml-org/llama.cpp/pull/28489) | Vulkan FA shmem staging (RDNA scalar path) + batch-independent MMVQ | 908.7 → 906.5 | 4018 → 4029 | kernel unchanged; server MoE+MTP decode +2-5 % | #28489 was in the set, **dropped** when it stopped merging (not worth a rebase for +2-5 % decode); #28507 not adopted (neutral) |
 
-The same mechanism serves llama-swap: `LLAMA_SWAP_PATCHES` is merged into `LLAMA_SWAP_COMMIT` and the result is compiled with the UI embedded, exactly as upstream's release build does (`make linux-amd64`). The list is empty right now — its one entry, [#1099](https://github.com/mostlygeek/llama-swap/pull/1099) (live generation stats in the Playground Chat), merged upstream on 2026-09-07. Retire PRs from either list as they merge — the build says so.
+The same mechanism serves llama-swap: `LLAMA_SWAP_PATCHES` is merged into `LLAMA_SWAP_COMMIT` and the result is compiled with the UI embedded, exactly as upstream's release build does (`make linux-amd64`). The list holds [#1301](https://github.com/mostlygeek/llama-swap/pull/1301): `hooks.on_unload.restore`, which loads listed default models again after other models stop (ttl, unload, eviction, crash), only when that evicts nothing, so a model someone asked for keeps its GPU and the default returns once it unloads. A stock llama-swap ignores the key. Retire PRs from either list as they merge — the build says so.
 
 ## Run
 

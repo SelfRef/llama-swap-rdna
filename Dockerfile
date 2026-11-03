@@ -102,10 +102,11 @@
 ARG LLAMA_SWAP_COMMIT="main"
 
 # Open upstream llama-swap PRs merged on top, same rules as LLAMA_PATCHES
-# (closed PRs are skipped with a notice, conflicts fail the build). Empty since
-# 2026-09-07: #1099 (ui/playground live per-turn generation stats in the Chat
-# tab) merged upstream on 2026-09-07 and is in main.
-ARG LLAMA_SWAP_PATCHES=""
+# (closed PRs are skipped with a notice, conflicts fail the build).
+#   #1301 hooks.on_unload.restore: reload default models after other models
+#         stop, only when that evicts nothing (issue #1300). Without it the
+#         key is ignored and a default comes back only on the next request.
+ARG LLAMA_SWAP_PATCHES="1301"
 
 # Cache key only: CI sets it to the PR heads' shas (scripts/resolve-refs.sh) so
 # an updated PR rebuilds llama-swap even though the PR list did not change.
