@@ -4,6 +4,14 @@ The image has no version numbers: every push and the scheduled rebuild publish
 from the then-current upstream branches, so changes are grouped by date. Newest
 first. The exact revisions inside any given image are in its `/versions.txt`.
 
+## 2026-11-03
+
+- **`exl3-server` runs on the RX 7800 XT / 7700 XT (gfx1101)** as well as gfx1100. The exllamav3
+  extension is built for both, and PyTorch's bundled rocBLAS keeps the kernels for both (it kept
+  gfx1100 only before, so gfx1101 had none). New build arg `EXL3_TARGETS`. On a 7800 XT, Qwen3.5
+  4B / 9B EXL3 with their MTP head decode 53-62 % faster on prose than the best llama.cpp build;
+  numbers in [exllamav3 for RDNA3](README.md#exllamav3-for-rdna3).
+
 ## 2026-11-02
 
 - **New: `hipbench`**, the `benchmark` prompts against any OpenAI-style server (`exl3-server`, a bare

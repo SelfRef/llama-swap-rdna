@@ -7,7 +7,7 @@ The [llama-swap](https://github.com/mostlygeek/llama-swap) `unified-vulkan` imag
 - **Vulkan** (Mesa RADV) — works on practically any AMD GPU, including RDNA1/2, iGPUs/APUs and anything ROCm doesn't cover. Built with a modern shader compiler (see [Why build the Vulkan binaries ourselves](#why-build-the-vulkan-binaries-ourselves)) and shipped with a **current Mesa/RADV** instead of Ubuntu 24.04's.
 - **ROCm 7.14** (HIP) — the full ROCm userspace runtime (HIP, rocBLAS/hipBLAS, hipBLASLt, `rocminfo`) plus HIP builds of the engines, with flash-attention kernels for every KV-cache quant. ROCm comes from AMD's per-gfx `packages-multi-arch` repository (`ROCM_CHANNEL=multiarch`), so the image carries BLAS kernels only for the gfx targets it is built for instead of ~6 GB of all-arch Tensile blobs; the classic `repo.radeon.com` channel (tops out at ROCm 7.2.4, which still has the HIP-graphs bug fixed in 7.13) remains available as `ROCM_CHANNEL=classic`.
 - **llama.cpp-rdna** (Vulkan, all tags) — [SelfRef/llama.cpp-rdna](https://github.com/SelfRef/llama.cpp-rdna) as a third `llama.cpp` install (`*-rdna` binaries): current upstream master **and** the ROCmFPx formats in one tree, plus measured RDNA3/RDNA3.5 Vulkan patches that were never upstreamed. See [The RDNA3 fork](#the-rdna-fork).
-- **exllamav3 for RDNA3** (HIP, `:full` tag, gfx1100 only) — [SelfRef/exllamav3-rdna](https://github.com/SelfRef/exllamav3-rdna) (upstream exllamav3 + RDNA3 kernels) with [TabbyAPI](https://github.com/theroyallab/tabbyAPI) as `exl3-server`: EXL3 quants with DFlash2 or MTP speculative decoding. Not a llama.cpp. See [exllamav3 for RDNA3](#exllamav3-for-rdna3).
+- **exllamav3 for RDNA3** (HIP, `:full` tag, gfx1100 + gfx1101) — [SelfRef/exllamav3-rdna](https://github.com/SelfRef/exllamav3-rdna) (upstream exllamav3 + RDNA3 kernels) with [TabbyAPI](https://github.com/theroyallab/tabbyAPI) as `exl3-server`: EXL3 quants with DFlash2 or MTP speculative decoding. Not a llama.cpp. See [exllamav3 for RDNA3](#exllamav3-for-rdna3).
 
 Both llama.cpp backends are built with runtime CPU dispatch (`GGML_CPU_ALL_VARIANTS`), so one image gets AVX2 on Zen 3 and AVX-512/VNNI/BF16 on Zen 4/5 for CPU-offloaded layers. Every engine is built once per backend from one resolved commit, so each ships as a matched Vulkan/ROCm pair — pick the backend per model in your llama-swap config.
 
@@ -18,7 +18,7 @@ Both llama.cpp backends are built with runtime CPU dispatch (`GGML_CPU_ALL_VARIA
 | [llama-swap](https://github.com/mostlygeek/llama-swap) `main` + PRs (`LLAMA_SWAP_PATCHES`) | `llama-swap` (UI embedded), `vllm-wrapper` | (backend-independent) |
 | [llama.cpp-rdna](https://github.com/SelfRef/llama.cpp-rdna) (llama.cpp fork: upstream master + ROCmFPx + RDNA3 patches) | `llama-server-rdna`, `llama-cli-rdna`, `llama-bench-rdna`, `llama-quantize-rdna`, `llama-perplexity-rdna` | — (Vulkan-only) |
 | [llama.cpp](https://github.com/ggml-org/llama.cpp) master + PRs (`LLAMA_PATCHES`) | `llama-server`, `llama-cli`, `llama-tts`, `llama-bench` | `llama-server-rocm`, `llama-cli-rocm`, `llama-tts-rocm`, `llama-bench-rocm` |
-| [exllamav3-rdna](https://github.com/SelfRef/exllamav3-rdna) + [TabbyAPI](https://github.com/theroyallab/tabbyAPI) (PyTorch venv, `/opt/exl3`) | — (HIP-only) | `exl3-server` (gfx1100 only) |
+| [exllamav3-rdna](https://github.com/SelfRef/exllamav3-rdna) + [TabbyAPI](https://github.com/theroyallab/tabbyAPI) (PyTorch venv, `/opt/exl3`) | — (HIP-only) | `exl3-server` (gfx1100, gfx1101) |
 | [whisper.cpp](https://github.com/ggml-org/whisper.cpp) master | `whisper-server`, `whisper-cli` | `whisper-server-rocm`, `whisper-cli-rocm` |
 | [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp) master | `sd-server` (web UI embedded), `sd-cli` | `sd-server-rocm` (web UI embedded), `sd-cli-rocm` |
 | [audio.cpp](https://github.com/0xShug0/audio.cpp) main | `audiocpp_server`, `audiocpp_cli`, `audiocpp_gguf` (GGUF converter, upstream ships none) | — (no HIP backend upstream) |
@@ -214,13 +214,22 @@ An agent loop, replayed: a ~9.5k-token system prompt, then turns that each appen
 | next turn with ~5.6k new tokens | **5.3-6.0** | 7.1-8.2 |
 | 26k-token turn after 217k tokens of other prompts | **7.8** (22.5 without `--sysmem-kv-cache`) | 8.9 |
 
-Quality of the two is a tie (gsm8k, humaneval, ifeval, thinking on in both, paired test p = 0.29). Use exllamav3 for the speed if one client at a time is enough; use llama.cpp when you need two parallel requests, fast model swaps, or a card other than gfx1100.
+Quality of the two is a tie (gsm8k, humaneval, ifeval, thinking on in both, paired test p = 0.29). Use exllamav3 for the speed if one client at a time is enough; use llama.cpp when you need two parallel requests, fast model swaps, or a card other than gfx1100/gfx1101.
 
 ## exllamav3 for RDNA3
 
-The `:full` tag ships [SelfRef/exllamav3-rdna](https://github.com/SelfRef/exllamav3-rdna) — current upstream [exllamav3](https://github.com/turboderp-org/exllamav3) (which has its own ROCm backend since v1.6.0) plus the RDNA3 matmul, bundled-projection and decode/verify-attention kernels of [phoenixhaxor/exllamav3-rocm](https://github.com/phoenixhaxor/exllamav3-rocm), the port this image shipped until 2026-10-21 — served by upstream [TabbyAPI](https://github.com/theroyallab/tabbyAPI): OpenAI-compatible API with streaming, tool calls, images and reasoning, plus **DFlash2** (block-diffusion draft model) or **MTP** speculative decoding. It is a PyTorch (ROCm 7.2 wheels) venv under `/opt/exl3`, launched as `exl3-server`; PyTorch brings its own HIP libraries, and the image keeps only their gfx1100 kernels. Triton JIT-compiles parts of prefill at runtime, which is why `:full` also carries `gcc` and the Python headers.
+The `:full` tag ships [SelfRef/exllamav3-rdna](https://github.com/SelfRef/exllamav3-rdna) — current upstream [exllamav3](https://github.com/turboderp-org/exllamav3) (which has its own ROCm backend since v1.6.0) plus the RDNA3 matmul, bundled-projection and decode/verify-attention kernels of [phoenixhaxor/exllamav3-rocm](https://github.com/phoenixhaxor/exllamav3-rocm), the port this image shipped until 2026-10-21 — served by upstream [TabbyAPI](https://github.com/theroyallab/tabbyAPI): OpenAI-compatible API with streaming, tool calls, images and reasoning, plus **DFlash2** (block-diffusion draft model) or **MTP** speculative decoding. It is a PyTorch (ROCm 7.2 wheels) venv under `/opt/exl3`, launched as `exl3-server`; PyTorch brings its own HIP libraries, and the image keeps only their gfx1100 and gfx1101 kernels (build arg `EXL3_TARGETS`). Triton JIT-compiles parts of prefill at runtime, which is why `:full` also carries `gcc` and the Python headers.
 
-**gfx1100 (RX 7900 XTX / 7900 XT / W7900) only.** On anything else use the llama.cpp builds.
+**gfx1100 (RX 7900 XTX / 7900 XT / W7900) and gfx1101 (RX 7800 XT / 7700 XT) only.** On anything else use the llama.cpp builds.
+
+On an **RX 7800 XT** (gfx1101, 2026-11-03), Qwen3.5 4B / 9B as EXL3 4.0 bpw with the model's own MTP head (`--draft-mode mtp --draft-num-tokens 2`) against the best llama.cpp build of each (Vulkan, ROCmFP4 on `llama-server-rdna`), greedy decode t/s on prose / JSON / after an 8k prompt, and prefill of a 29k prompt:
+
+| model | llama.cpp ROCmFP4 | exllamav3 + MTP |
+|---|---|---|
+| Qwen3.5-4B | 105.9 / 105.7 / 99.4, prefill 2516 | **162.2 / 250.8 / 192.3**, prefill ~3350 |
+| Qwen3.5-9B | 79.5 / 79.5 / 75.8, prefill 1776 | **122.9 / 171.4 / 133.6**, prefill 2186 |
+
+Two draft tokens beat the default (4) on prose. Use a quant that keeps the MTP head (`mtp.*` tensors); not every EXL3 upload does.
 
 Every TabbyAPI config key is also a flag (`exl3-server --help`), so a llama-swap entry needs no config file. The image's Qwen templates are available as `--prompt-template qwen-fixed` / `qwen-sharp`. A complete entry for Qwen3.8-27B is in [Reference setup: Qwen3.8-27B on an RX 7900 XTX](#reference-setup-qwen38-27b-on-an-rx-7900-xtx). For the full 262,144 context use `--draft-mode mtp --draft-cache-mode Q8` (the MTP head is inside the main model) and drop the draft model flags. The container needs `/dev/kfd` as well as the render node.
 
@@ -315,8 +324,8 @@ The Vulkan binaries run on any AMD GPU with a current RADV driver. The HIP (ROCm
 
 | GPU | gfx | ROCm in the published `:full` | Vulkan |
 |---|---|---|---|
-| RX 7900 XTX / XT / GRE, W7900 / W7800 | gfx1100 | **yes** (also the only target of `exl3-server`) | yes |
-| RX 7800 XT / 7700 XT | gfx1101 | **yes** | yes |
+| RX 7900 XTX / XT / GRE, W7900 / W7800 | gfx1100 | **yes** (also a target of `exl3-server`) | yes |
+| RX 7800 XT / 7700 XT | gfx1101 | **yes** (also a target of `exl3-server`) | yes |
 | Strix Halo — Ryzen AI Max (Radeon 8060S / 8050S) | gfx1151 | **yes** | yes |
 | RX 9070 XT / 9070 | gfx1201 | **yes** | yes |
 | RX 9060 XT | gfx1200 | **yes** | yes |

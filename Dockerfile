@@ -27,7 +27,7 @@
 #     Vulkan patches
 #     measured on gfx1100/1101/1151 -- see the WITH_RDNA arg below
 #   - SelfRef/exllamav3-rdna (upstream exllamav3 + RDNA3 kernels) + TabbyAPI in a PyTorch
-#     venv under /opt/exl3, launched as `exl3-server` (gfx1100 only, :full
+#     venv under /opt/exl3, launched as `exl3-server` (gfx1100/1101, :full
 #     only) -- see the WITH_EXL3 arg below
 #   - Vulkan builds of llama.cpp, whisper.cpp, sd.cpp and audio.cpp with a
 #     MODERN glslc. Upstream builds them on Ubuntu 24.04 with its stock glslc
@@ -326,13 +326,15 @@ ARG RDNA_COMMIT=""
 # speculative decoding. Not a llama.cpp: a PyTorch (ROCm wheels)
 # venv in /opt/exl3 with an `exl3-server` launcher, so a llama-swap entry runs
 # it like any other server (`exl3-server --port ${PORT} --model-dir ...`).
-# Built for gfx1100 ONLY (the one card it is benchmarked on; README has the
-# numbers), so EXL3_TARGETS is not a list. Only with WITH_ROCM=true AND WITH_EXL3=true:
+# EXL3_TARGETS: the cards it is built and benchmarked on, gfx1100 (RX 7900 XTX)
+# and gfx1101 (RX 7800 XT; README has the numbers). PyTorch's bundled kernels
+# for every other gfx are pruned. Only with WITH_ROCM=true AND WITH_EXL3=true:
 # it is a HIP engine and adds ~8 GB (PyTorch's bundled ROCm libraries, already
-# pruned to gfx1100), which the Vulkan-only image must not carry. Built on the
+# pruned to EXL3_TARGETS), which the Vulkan-only image must not carry. Built on the
 # classic ROCm toolchain whatever ROCM_CHANNEL says: the PyTorch wheels are
 # ROCm 7.2 builds and the fork is tested on 7.2.4 (= ROCM_VERSION).
 ARG WITH_EXL3=true
+ARG EXL3_TARGETS="gfx1100;gfx1101"
 ARG EXL3_REPO=https://github.com/SelfRef/exllamav3-rdna.git
 ARG EXL3_BRANCH=rdna
 ARG EXL3_COMMIT=""
@@ -1012,6 +1014,7 @@ BUILD
 # ── Build exllamav3-rocm + TabbyAPI (see the WITH_EXL3 arg) ────────────
 
 FROM rocm-toolchain-classic AS exl3
+ARG EXL3_TARGETS
 ARG EXL3_REPO
 ARG EXL3_BRANCH
 ARG EXL3_COMMIT
@@ -1053,7 +1056,7 @@ pip install --no-cache-dir tokenizers "numpy>=2.1" rich typing_extensions safete
 sed -i 's/sm_scale == 0.0f ? rsqrtf((float) dim)/sm_scale == 0.0f ? 1.0f \/ sqrtf((float) dim)/' \
     exllamav3/exllamav3_ext/attention.cu
 
-echo "=== Building exllamav3_ext for gfx1100 ==="
+echo "=== Building exllamav3_ext for ${EXL3_TARGETS} ==="
 # ccache for the extension: torch's builder never wraps a compiler on ROCm, so two
 # wrappers do. hipcc's preprocessed output under --offload-compress is a compressed
 # (binary) offload bundle ccache cannot hash: drop the flag for its -E runs only
@@ -1072,7 +1075,7 @@ printf '#!/bin/sh\nexec ccache /opt/rocm/llvm/bin/clang++ "$@"\n' > /tmp/ccw/cla
 chmod +x /tmp/ccw/hipcc /tmp/ccw/clang++
 CCACHE_DIR=/ccache CCACHE_MAXSIZE=2G CCACHE_COMPILERCHECK='%compiler% --version' \
 PYTORCH_NVCC="ccache /tmp/ccw/hipcc" \
-CC=/opt/rocm/llvm/bin/clang CXX=/tmp/ccw/clang++ PYTORCH_ROCM_ARCH=gfx1100 \
+CC=/opt/rocm/llvm/bin/clang CXX=/tmp/ccw/clang++ PYTORCH_ROCM_ARCH="${EXL3_TARGETS}" \
 MAX_JOBS="$(nproc)" ROCM_HOME=/opt/rocm python setup.py build_ext --inplace --force
 CCACHE_DIR=/ccache ccache --show-stats | grep -E "Hits|Misses" | head -2
 rm -rf /tmp/ccw
@@ -1095,13 +1098,15 @@ ln -s /etc/llama-swap/templates/qwen-fixed.jinja /opt/exl3/tabbyAPI/templates/qw
 ln -s /etc/llama-swap/templates/qwen-sharp.jinja /opt/exl3/tabbyAPI/templates/qwen-sharp.jinja
 
 # PyTorch's wheels bundle rocBLAS/hipBLASLt/MIOpen/AOTriton kernels for every
-# ROCm GPU (~7 GB); the extension only ever runs on gfx1100.
+# ROCm GPU (~7 GB); the extension only ever runs on EXL3_TARGETS. Files named
+# for a family (gfx110x) are kept too.
 SP=/opt/exl3/venv/lib/python3.12/site-packages
 before=$(du -sm "$SP" | cut -f1)
+keep="${EXL3_TARGETS//gfx/}"; keep="${keep//;/|}|110x"
 find "$SP/torch/lib" "$SP/torch/share" -regextype posix-extended -type f \
-    -regex '.*gfx[0-9]+[a-z0-9]*.*' ! -regex '.*gfx(1100|110x)([^0-9a-z].*|$)' -delete
+    -regex '.*gfx[0-9]+[a-z0-9]*.*' ! -regex ".*gfx(${keep})([^0-9a-z].*|\$)" -delete
 find "$SP/torch/lib" "$SP/torch/share" -type d -empty -delete
-echo "pruned $(( before - $(du -sm "$SP" | cut -f1) )) MB of non-gfx1100 kernels"
+echo "pruned $(( before - $(du -sm "$SP" | cut -f1) )) MB of kernels not for ${EXL3_TARGETS}"
 find /opt/exl3 -name __pycache__ -type d -prune -exec rm -rf {} +
 
 # Canary: the extension must import (no GPU needed to load it) and TabbyAPI must
@@ -1131,7 +1136,7 @@ mkdir -p /install/build-info
 { echo "exl3_commit: ${COMMIT} (${EXL3_REPO} @ ${EXL3_BRANCH})";
   echo "exl3_tabbyapi_commit: ${TABBY_COMMIT} (${TABBY_REPO} @ ${TABBY_BRANCH})";
   echo "exl3_torch: $(python -c 'import torch; print(torch.__version__)')";
-  echo "exl3_targets: gfx1100"; } > /install/build-info/exl3
+  echo "exl3_targets: ${EXL3_TARGETS}"; } > /install/build-info/exl3
 BUILD
 
 # ── Build whisper.cpp (HIP) ────────────────────────────────────────────
