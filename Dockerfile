@@ -27,7 +27,7 @@
 #     Vulkan patches
 #     measured on gfx1100/1101/1151 -- see the WITH_RDNA arg below
 #   - SelfRef/exllamav3-rdna (upstream exllamav3 + RDNA3 kernels) + TabbyAPI in a PyTorch
-#     venv under /opt/exl3, launched as `exl3-server` (gfx1100/1101, :full
+#     venv under /opt/exl3, launched as `exl3-server` (gfx1100/1101/1151, :full
 #     only) -- see the WITH_EXL3 arg below
 #   - Vulkan builds of llama.cpp, whisper.cpp, sd.cpp and audio.cpp with a
 #     MODERN glslc. Upstream builds them on Ubuntu 24.04 with its stock glslc
@@ -327,15 +327,16 @@ ARG RDNA_COMMIT=""
 # speculative decoding. Not a llama.cpp: a PyTorch (ROCm wheels)
 # venv in /opt/exl3 with an `exl3-server` launcher, so a llama-swap entry runs
 # it like any other server (`exl3-server --port ${PORT} --model-dir ...`).
-# EXL3_TARGETS: the cards it is built and benchmarked on, gfx1100 (RX 7900 XTX)
-# and gfx1101 (RX 7800 XT; README has the numbers). PyTorch's bundled kernels
+# EXL3_TARGETS: the cards it is built for: gfx1100 (RX 7900 XTX) and gfx1101
+# (RX 7800 XT) benchmarked (README has the numbers), gfx1151 (Strix Halo)
+# compile-only. PyTorch's bundled kernels
 # for every other gfx are pruned. Only with WITH_ROCM=true AND WITH_EXL3=true:
 # it is a HIP engine and adds ~8 GB (PyTorch's bundled ROCm libraries, already
 # pruned to EXL3_TARGETS), which the Vulkan-only image must not carry. Built on the
 # classic ROCm toolchain whatever ROCM_CHANNEL says: the PyTorch wheels are
 # ROCm 7.2 builds and the fork is tested on 7.2.4 (= ROCM_VERSION).
 ARG WITH_EXL3=true
-ARG EXL3_TARGETS="gfx1100;gfx1101"
+ARG EXL3_TARGETS="gfx1100;gfx1101;gfx1151"
 ARG EXL3_REPO=https://github.com/SelfRef/exllamav3-rdna.git
 ARG EXL3_BRANCH=rdna
 ARG EXL3_COMMIT=""
