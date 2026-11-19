@@ -1119,7 +1119,13 @@ python -c "import torch; from exllamav3.ext import exllamav3_ext; print('exllama
 # TabbyAPI's main branch raises its exllamav3 floor ahead of the fork, and only
 # checks it at model load: run the same check here so a mismatch fails the build.
 floor=$(sed -n 's/.*check_package_version("exllamav3", "\([0-9.]*\)").*/\1/p' \
-    /opt/exl3/tabbyAPI/backends/exllamav3/model.py)
+    /opt/exl3/tabbyAPI/backends/exllamav3/model.py || true)
+# Current tabbyAPI moved the floor to its pyproject wheel URL; read it there so
+# the canary still verifies the source-built engine instead of skipping.
+if [ -z "$floor" ]; then
+  floor=$(sed -n 's|.*exllamav3/releases/download/v\([0-9.]*\)/.*|\1|p' \
+    /opt/exl3/tabbyAPI/pyproject.toml | head -1 || true)
+fi
 [ -n "$floor" ] || { echo "FATAL: TabbyAPI's exllamav3 version check not found" >&2; exit 1; }
 (cd /opt/exl3/tabbyAPI && python -c "from common.optional_dependencies import check_package_version; check_package_version('exllamav3', '$floor')")
 
